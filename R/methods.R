@@ -218,6 +218,22 @@ glance.diagref_fit <- function(x, ...) {
 }
 
 #' @export
+logLik.diagref_fit <- function(object, ...) {
+  n      <- object$parsed$n
+  # MLE of sigma^2 uses n not n-p in the denominator
+  sigma2 <- object$rss / n
+  ll     <- -n / 2 * (log(2 * pi * sigma2) + 1)
+
+  K    <- object$K
+  p_w  <- length(object$theta_hat)
+  p_cov <- length(object$cov_coef)
+  # free params: (K-1) scores + p_w weight params + p_cov linear params + 1 for sigma^2
+  df   <- (K - 1L) + p_w + p_cov + 1L
+
+  structure(ll, df = df, nobs = n, class = "logLik")
+}
+
+#' @export
 augment.diagref_fit <- function(x, ...) {
   mf <- x$parsed$mf
   tibble::as_tibble(mf) |>
