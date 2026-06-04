@@ -11,10 +11,17 @@ print.diagref_fit <- function(x, ...) {
                   x$ci$ci_w[1], x$ci$ci_w[2], round(x$level * 100)))
     } else cat("\n")
   } else {
-    cat("Weights (w) per group:\n")
-    w_vals <- plogis(x$theta_hat)
+    cat("Weights (w) by group:\n")
+    unique_wd <- unique(x$weight_data)
+    unique_wd <- unique_wd[do.call(order, as.list(unique_wd)), , drop = FALSE]
+    Z_uniq    <- build_weight_matrix(x$weight_formula, unique_wd)
+    w_vals    <- plogis(drop(Z_uniq %*% x$theta_hat))
+    labels    <- vapply(seq_len(nrow(unique_wd)), function(i) {
+      row_vals <- lapply(unique_wd[i, , drop = FALSE], as.character)
+      paste(paste(names(row_vals), unlist(row_vals), sep = "="), collapse = ", ")
+    }, character(1))
     for (i in seq_along(w_vals)) {
-      cat(sprintf("  theta[%d]: w = %.4f\n", i, w_vals[i]))
+      cat(sprintf("  %s: w = %.4f\n", labels[i], w_vals[i]))
     }
   }
 
@@ -37,13 +44,16 @@ print.diagref_fit <- function(x, ...) {
 
 #' @export
 tidy.diagref_fit <- function(x, ...) {
-  parsed  <- x$parsed
-  K       <- x$K
-  n_drm   <- K - 1
-  inner   <- x$inner
-  n       <- parsed$n
+  parsed <- x$parsed
+  K      <- x$K
+  n_drm  <- K - 1
+  inner  <- x$inner
+  df_r   <- inner$df_resid
+  level  <- x$level
+  t_crit <- qt(1 - (1 - level) / 2, df = df_r)
+  z_crit <- qnorm(1 - (1 - level) / 2)
 
-  # Variance-covariance for linear params from OLS
+  # OLS variance-covariance for linear parameters
   sigma2  <- inner$sigma2
   XtX_inv <- tryCatch(
     chol2inv(chol(crossprod(inner$X))),
@@ -52,83 +62,103 @@ tidy.diagref_fit <- function(x, ...) {
   se_coef <- sqrt(diag(XtX_inv) * sigma2)
 
   # --- Score parameters ---
-  C       <- contr.sum(K)
-  delta   <- inner$coef[seq_len(n_drm)]
-  se_delta <- se_coef[seq_len(n_drm)]
-
-  # Propagate delta SE to mu via C (K x K-1 matrix)
-  # Var(mu) = C Var(delta) C'
-  var_delta <- diag(se_delta^2, nrow = n_drm)
-  var_mu    <- C %*% var_delta %*% t(C)
+  C         <- contr.sum(K)
+  se_delta  <- se_coef[seq_len(n_drm)]
+  var_mu    <- C %*% diag(se_delta^2, nrow = n_drm) %*% t(C)
   se_mu     <- sqrt(pmax(diag(var_mu), 0))
+  t_scores  <- x$scores / se_mu
 
-  df_r <- inner$df_resid
   score_rows <- tibble::tibble(
     term      = paste0("score[", parsed$all_levels, "]"),
     type      = "score",
     estimate  = x$scores,
     std.error = se_mu,
-    statistic = x$scores / se_mu,
-    p.value   = 2 * pt(abs(x$scores / se_mu), df = df_r, lower.tail = FALSE)
+    statistic = t_scores,
+    p.value   = 2 * pt(abs(t_scores), df = df_r, lower.tail = FALSE),
+    conf.low  = x$scores - t_crit * se_mu,
+    conf.high = x$scores + t_crit * se_mu
   )
 
   # --- Weight parameter(s) ---
-  p_w <- length(x$theta_hat)
-  w_names <- if (!is.null(x$weight_formula)) {
-    colnames(x$Z_w)
-  } else {
-    "w"
-  }
+  # Always show predicted weights on the probability scale for unique
+  # combinations of weight predictors.
+  vcov_w   <- x$vcov_theta
+  has_vcov <- !is.null(vcov_w) && !anyNA(vcov_w)
 
-  if (p_w == 1) {
-    ci_w <- x$ci$ci_w
+  if (is.null(x$weight_formula)) {
+    # Scalar w: use profile CI; SE via delta method from Hessian
+    theta <- x$theta_hat
+    w_val <- plogis(theta)
+    se_w  <- if (has_vcov) sqrt(vcov_w[1, 1]) * w_val * (1 - w_val) else NA_real_
+    ci_w  <- x$ci$ci_w
+
     w_rows <- tibble::tibble(
       term      = "w",
       type      = "weight",
-      estimate  = plogis(x$theta_hat),
-      std.error = NA_real_,
+      estimate  = w_val,
+      std.error = se_w,
       statistic = NA_real_,
       p.value   = NA_real_,
       conf.low  = ci_w[1],
       conf.high = ci_w[2]
     )
   } else {
-    ci_list <- x$ci
+    # Multi-param: compute predicted w for each unique combination of
+    # weight predictors, then apply delta method for CIs.
+    unique_wd <- unique(x$weight_data)
+    # Sort for deterministic ordering
+    unique_wd <- unique_wd[do.call(order, as.list(unique_wd)), , drop = FALSE]
+    Z_uniq    <- build_weight_matrix(x$weight_formula, unique_wd)
+    lin_pred  <- drop(Z_uniq %*% x$theta_hat)
+    w_pred    <- plogis(lin_pred)
+
+    if (has_vcov) {
+      se_lin <- vapply(seq_len(nrow(Z_uniq)), function(i) {
+        l <- Z_uniq[i, ]
+        sqrt(max(0, as.numeric(t(l) %*% vcov_w %*% l)))
+      }, numeric(1))
+      se_w      <- se_lin * w_pred * (1 - w_pred)
+      conf_low  <- plogis(lin_pred - z_crit * se_lin)
+      conf_high <- plogis(lin_pred + z_crit * se_lin)
+    } else {
+      se_w <- conf_low <- conf_high <- rep(NA_real_, nrow(unique_wd))
+    }
+
+    # Build human-readable labels from original predictor values
+    labels <- vapply(seq_len(nrow(unique_wd)), function(i) {
+      row_vals <- lapply(unique_wd[i, , drop = FALSE], as.character)
+      paste(paste(names(row_vals), unlist(row_vals), sep = "="), collapse = ", ")
+    }, character(1))
+
     w_rows <- tibble::tibble(
-      term      = paste0("w[", w_names, "]"),
+      term      = paste0("w[", labels, "]"),
       type      = "weight",
-      estimate  = plogis(x$theta_hat),
-      std.error = NA_real_,
+      estimate  = w_pred,
+      std.error = se_w,
       statistic = NA_real_,
       p.value   = NA_real_,
-      conf.low  = vapply(ci_list, function(ci) ci$ci_w[1], numeric(1)),
-      conf.high = vapply(ci_list, function(ci) ci$ci_w[2], numeric(1))
+      conf.low  = conf_low,
+      conf.high = conf_high
     )
   }
 
   # --- Covariate coefficients ---
-  cov_coef  <- x$cov_coef
-  se_cov    <- se_coef[-(seq_len(n_drm))]
+  cov_coef <- x$cov_coef
+  se_cov   <- se_coef[-(seq_len(n_drm))]
+  t_cov    <- cov_coef / se_cov
 
   cov_rows <- tibble::tibble(
     term      = names(cov_coef),
     type      = "covariate",
     estimate  = cov_coef,
     std.error = se_cov,
-    statistic = cov_coef / se_cov,
-    p.value   = 2 * pt(abs(cov_coef / se_cov), df = df_r, lower.tail = FALSE)
+    statistic = t_cov,
+    p.value   = 2 * pt(abs(t_cov), df = df_r, lower.tail = FALSE),
+    conf.low  = cov_coef - t_crit * se_cov,
+    conf.high = cov_coef + t_crit * se_cov
   )
 
-  # Combine; fill missing columns with NA
-  all_rows <- list(score_rows, w_rows, cov_rows)
-  all_cols <- unique(unlist(lapply(all_rows, names)))
-  for (i in seq_along(all_rows)) {
-    missing <- setdiff(all_cols, names(all_rows[[i]]))
-    for (col in missing) all_rows[[i]][[col]] <- NA_real_
-    all_rows[[i]] <- all_rows[[i]][all_cols]
-  }
-
-  do.call(rbind, all_rows)
+  do.call(rbind, list(score_rows, w_rows, cov_rows))
 }
 
 #' @export

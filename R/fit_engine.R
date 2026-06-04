@@ -62,33 +62,37 @@ recover_scores <- function(delta, K) {
 
 # Main fitting routine. Returns a raw fit object.
 drm_fit <- function(parsed, Z_w) {
-  p_w <- ncol(Z_w)
+  p_w    <- ncol(Z_w)
+  neg_ll <- function(theta) -drm_loglik(theta, Z_w, parsed)
 
   if (p_w == 1) {
-    # Scalar w: 1D optimization is faster and more reliable
-    opt <- optimize(
-      f        = function(theta) drm_objective(theta, Z_w, parsed),
-      interval = c(-10, 10)
-    )
-    theta_hat <- opt$minimum
-    rss_hat   <- opt$objective
-  } else {
-    # Multi-parameter weight model
-    theta0 <- rep(0, p_w)
+    # Scalar w: 1D Brent with Hessian for SE
     opt <- optim(
-      par    = theta0,
-      fn     = function(theta) drm_objective(theta, Z_w, parsed),
-      method = "BFGS"
+      par     = 0,
+      fn      = neg_ll,
+      method  = "Brent",
+      lower   = -10,
+      upper   = 10,
+      hessian = TRUE
     )
-    theta_hat <- opt$par
-    rss_hat   <- opt$value
+  } else {
+    opt <- optim(
+      par     = rep(0, p_w),
+      fn      = neg_ll,
+      method  = "BFGS",
+      hessian = TRUE
+    )
   }
 
-  w_hat    <- compute_weights(theta_hat, Z_w)
-  inner    <- drm_inner_fit(w_hat, parsed)
+  theta_hat  <- opt$par
+  vcov_theta <- tryCatch(solve(opt$hessian),
+                         error = function(e) matrix(NA_real_, p_w, p_w))
 
-  K      <- length(parsed$all_levels)
-  n_drm  <- K - 1
+  w_hat <- compute_weights(theta_hat, Z_w)
+  inner <- drm_inner_fit(w_hat, parsed)
+
+  K     <- length(parsed$all_levels)
+  n_drm <- K - 1
   delta  <- inner$coef[seq_len(n_drm)]
   scores <- recover_scores(delta, K)
   names(scores) <- parsed$all_levels
@@ -97,11 +101,12 @@ drm_fit <- function(parsed, Z_w) {
 
   list(
     theta_hat  = theta_hat,
+    vcov_theta = vcov_theta,
     w_hat      = w_hat,
     scores     = scores,
     cov_coef   = cov_coef,
     inner      = inner,
-    rss        = rss_hat,
+    rss        = inner$rss,
     K          = K,
     parsed     = parsed,
     Z_w        = Z_w

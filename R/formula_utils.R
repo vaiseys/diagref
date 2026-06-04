@@ -59,16 +59,14 @@ parse_diagref_formula <- function(formula, data) {
 # data_subset is the original data filtered to the rows used after na.omit.
 # Returns an n x p matrix; default (NULL) is a single intercept column.
 #
-# The intercept is suppressed by default so that each column maps directly
-# to one group/level: plogis(theta_j) = w for that group. Users who want a
-# proper intercept for continuous predictors should write ~1 + continuous_var.
+# Standard (with-intercept) model.matrix is used so that continuous and
+# categorical predictors both work. The intercept represents the baseline
+# weight; tidy() recovers per-group predicted weights via delta method.
 build_weight_matrix <- function(weight_formula, data_subset) {
   n <- nrow(data_subset)
   if (is.null(weight_formula)) {
     return(matrix(1, nrow = n, ncol = 1,
-                  dimnames = list(NULL, "w")))
+                  dimnames = list(NULL, "(Intercept)")))
   }
-  # Remove intercept so factor levels get their own columns
-  no_int_formula <- update(weight_formula, ~ . - 1)
-  model.matrix(no_int_formula, data = data_subset)
+  model.matrix(weight_formula, data = data_subset)
 }

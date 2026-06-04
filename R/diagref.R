@@ -31,14 +31,24 @@ diagref <- function(formula, data, weight_formula = NULL, level = 0.95,
   data_subset <- data[parsed$kept_rows, , drop = FALSE]
   Z_w         <- build_weight_matrix(weight_formula, data_subset)
 
-  raw    <- drm_fit(parsed, Z_w)
-  ci     <- compute_profile_ci(raw, level = level, n_grid = n_grid)
+  # Keep original weight predictor columns for per-group display in tidy()
+  weight_data <- if (!is.null(weight_formula)) {
+    wvars <- intersect(all.vars(weight_formula), names(data_subset))
+    data_subset[, wvars, drop = FALSE]
+  } else {
+    NULL
+  }
+
+  raw <- drm_fit(parsed, Z_w)
+  ci  <- compute_profile_ci(raw, level = level, n_grid = n_grid)
 
   structure(
     list(
       formula        = formula,
       weight_formula = weight_formula,
+      weight_data    = weight_data,
       theta_hat      = raw$theta_hat,
+      vcov_theta     = raw$vcov_theta,
       w_hat          = raw$w_hat,
       scores         = raw$scores,
       cov_coef       = raw$cov_coef,
