@@ -103,43 +103,67 @@ tidy.diagref_fit <- function(x, ...) {
       conf.high = ci_w[2]
     )
   } else {
-    # Multi-param: compute predicted w for each unique combination of
-    # weight predictors, then apply delta method for CIs.
-    unique_wd <- unique(x$weight_data)
-    # Sort for deterministic ordering
-    unique_wd <- unique_wd[do.call(order, as.list(unique_wd)), , drop = FALSE]
-    Z_uniq    <- build_weight_matrix(x$weight_formula, unique_wd)
-    lin_pred  <- drop(Z_uniq %*% x$theta_hat)
-    w_pred    <- plogis(lin_pred)
+    # Multi-param weight model. Choose display based on the number of unique
+    # predictor combinations:
+    #   few (<=20): per-group predicted weights on the probability scale
+    #   many (>20): logit-scale coefficients, like logistic regression output
+    unique_wd  <- unique(x$weight_data)
+    n_patterns <- nrow(unique_wd)
 
-    if (has_vcov) {
-      se_lin <- vapply(seq_len(nrow(Z_uniq)), function(i) {
-        l <- Z_uniq[i, ]
-        sqrt(max(0, as.numeric(t(l) %*% vcov_w %*% l)))
-      }, numeric(1))
-      se_w      <- se_lin * w_pred * (1 - w_pred)
-      conf_low  <- plogis(lin_pred - z_crit * se_lin)
-      conf_high <- plogis(lin_pred + z_crit * se_lin)
+    if (n_patterns <= 20) {
+      # --- Per-group predicted weights (probability scale) ---
+      unique_wd <- unique_wd[do.call(order, as.list(unique_wd)), , drop = FALSE]
+      Z_uniq   <- build_weight_matrix(x$weight_formula, unique_wd)
+      lin_pred <- drop(Z_uniq %*% x$theta_hat)
+      w_pred   <- plogis(lin_pred)
+
+      if (has_vcov) {
+        se_lin <- vapply(seq_len(nrow(Z_uniq)), function(i) {
+          l <- Z_uniq[i, ]
+          sqrt(max(0, as.numeric(t(l) %*% vcov_w %*% l)))
+        }, numeric(1))
+        se_w      <- se_lin * w_pred * (1 - w_pred)
+        conf_low  <- plogis(lin_pred - z_crit * se_lin)
+        conf_high <- plogis(lin_pred + z_crit * se_lin)
+      } else {
+        se_w <- conf_low <- conf_high <- rep(NA_real_, nrow(unique_wd))
+      }
+
+      labels <- vapply(seq_len(nrow(unique_wd)), function(i) {
+        row_vals <- lapply(unique_wd[i, , drop = FALSE], as.character)
+        paste(paste(names(row_vals), unlist(row_vals), sep = "="), collapse = ", ")
+      }, character(1))
+
+      w_rows <- tibble::tibble(
+        term      = paste0("w[", labels, "]"),
+        type      = "weight",
+        estimate  = w_pred,
+        std.error = se_w,
+        statistic = NA_real_,
+        p.value   = NA_real_,
+        conf.low  = conf_low,
+        conf.high = conf_high
+      )
     } else {
-      se_w <- conf_low <- conf_high <- rep(NA_real_, nrow(unique_wd))
+      # --- Logit-scale coefficients (continuous or mixed predictors) ---
+      # estimate/conf.low/conf.high are on the logit scale (like logistic
+      # regression). Use plogis(estimate) to get the probability at a
+      # given covariate value.
+      se_theta <- if (has_vcov) sqrt(pmax(0, diag(vcov_w))) else rep(NA_real_, length(x$theta_hat))
+      z_stat   <- x$theta_hat / se_theta
+      p_val    <- 2 * pnorm(abs(z_stat), lower.tail = FALSE)
+
+      w_rows <- tibble::tibble(
+        term      = paste0("w[", colnames(x$Z_w), "]"),
+        type      = "weight",
+        estimate  = x$theta_hat,
+        std.error = se_theta,
+        statistic = z_stat,
+        p.value   = p_val,
+        conf.low  = x$theta_hat - z_crit * se_theta,
+        conf.high = x$theta_hat + z_crit * se_theta
+      )
     }
-
-    # Build human-readable labels from original predictor values
-    labels <- vapply(seq_len(nrow(unique_wd)), function(i) {
-      row_vals <- lapply(unique_wd[i, , drop = FALSE], as.character)
-      paste(paste(names(row_vals), unlist(row_vals), sep = "="), collapse = ", ")
-    }, character(1))
-
-    w_rows <- tibble::tibble(
-      term      = paste0("w[", labels, "]"),
-      type      = "weight",
-      estimate  = w_pred,
-      std.error = se_w,
-      statistic = NA_real_,
-      p.value   = NA_real_,
-      conf.low  = conf_low,
-      conf.high = conf_high
-    )
   }
 
   # --- Covariate coefficients ---

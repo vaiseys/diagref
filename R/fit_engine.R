@@ -60,10 +60,29 @@ recover_scores <- function(delta, K) {
   drop(C %*% delta)
 }
 
+# Center non-intercept columns of Z_w for numerical stability.
+# Returns list: Z_centered, col_means (for back-transforming theta later if needed)
+center_weight_matrix <- function(Z_w) {
+  col_means <- colMeans(Z_w)
+  # Leave intercept column (all 1s) untouched
+  is_intercept <- apply(Z_w, 2, function(col) all(col == 1))
+  col_means[is_intercept] <- 0
+  Z_centered <- sweep(Z_w, 2, col_means, "-")
+  list(Z = Z_centered, means = col_means)
+}
+
 # Main fitting routine. Returns a raw fit object.
 drm_fit <- function(parsed, Z_w) {
-  p_w    <- ncol(Z_w)
-  neg_ll <- function(theta) -drm_loglik(theta, Z_w, parsed)
+  p_w <- ncol(Z_w)
+
+  # Center non-intercept columns for numerical stability. This transforms
+  # the intercept to represent logit(w) at the mean of each predictor,
+  # which avoids degeneracy when predictors are far from zero (e.g. raw age).
+  centered   <- center_weight_matrix(Z_w)
+  Z_c        <- centered$Z
+  col_means  <- centered$means
+
+  neg_ll <- function(theta) -drm_loglik(theta, Z_c, parsed)
 
   if (p_w == 1) {
     # Scalar w: 1D Brent with Hessian for SE
@@ -76,17 +95,41 @@ drm_fit <- function(parsed, Z_w) {
       hessian = TRUE
     )
   } else {
+    # Initialize intercept from scalar fit; other params start at 0
+    scalar_opt <- optim(
+      par    = 0,
+      fn     = function(th) -drm_loglik(th, Z_c[, 1, drop = FALSE], parsed),
+      method = "Brent",
+      lower  = -10,
+      upper  = 10
+    )
+    theta0 <- c(scalar_opt$par, rep(0, p_w - 1))
     opt <- optim(
-      par     = rep(0, p_w),
+      par     = theta0,
       fn      = neg_ll,
       method  = "BFGS",
       hessian = TRUE
     )
   }
 
-  theta_hat  <- opt$par
-  vcov_theta <- tryCatch(solve(opt$hessian),
+  theta_c    <- opt$par
+  vcov_c     <- tryCatch(solve(opt$hessian),
                          error = function(e) matrix(NA_real_, p_w, p_w))
+
+  # Back-transform from centered to original scale so Z_w (uncentered)
+  # can be used for all downstream predictions.
+  # Slopes are unchanged; only intercept absorbs the centering shift.
+  if (p_w > 1) {
+    theta_hat <- theta_c
+    theta_hat[1] <- theta_c[1] - sum(theta_c[-1] * col_means[-1])
+
+    J           <- diag(p_w)
+    J[1, -1]    <- -col_means[-1]
+    vcov_theta  <- J %*% vcov_c %*% t(J)
+  } else {
+    theta_hat  <- theta_c
+    vcov_theta <- vcov_c
+  }
 
   w_hat <- compute_weights(theta_hat, Z_w)
   inner <- drm_inner_fit(w_hat, parsed)
