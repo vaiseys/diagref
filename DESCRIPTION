@@ -1,0 +1,21 @@
+Package: diagref
+Title: Tidy Diagonal Reference Models
+Version: 0.1.0
+Authors@R:
+    person("First", "Last", email = "example@example.com", role = c("aut", "cre"))
+Description: Fits Sobel's diagonal reference model (DRM) for dyadic variables
+    such as origin/destination class, partner social positions, or parent
+    characteristics. Provides a tidy interface with broom-compatible methods.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports:
+    stats,
+    tibble,
+    generics
+Suggests:
+    broom,
+    testthat (>= 3.0.0),
+    dplyr
+Config/testthat/edition: 3

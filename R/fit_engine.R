@@ -1,0 +1,109 @@
+# Build the DRM design matrix columns for a given weight vector w_i.
+# Uses sum-to-zero (contr.sum) coding: K-1 columns returned.
+# var1, var2: integer indices (1-based) into all_levels
+# w: numeric vector length n
+# K: number of levels
+# Returns n x (K-1) matrix
+build_drm_matrix <- function(var1_int, var2_int, w, K) {
+  C <- contr.sum(K)  # K x (K-1) sum-to-zero contrast matrix
+  # DRM row for obs i: w_i * C[var1_i, ] + (1-w_i) * C[var2_i, ]
+  w * C[var1_int, , drop = FALSE] + (1 - w) * C[var2_int, , drop = FALSE]
+}
+
+# Given theta (unconstrained), compute weight vector w (length n).
+# Z_w: n x p weight model matrix; theta: p-vector
+compute_weights <- function(theta, Z_w) {
+  plogis(drop(Z_w %*% theta))
+}
+
+# Inner OLS fit for fixed weights w.
+# Returns list: coef, rss, sigma2, fitted, residuals, df_resid
+drm_inner_fit <- function(w, parsed) {
+  K       <- length(parsed$all_levels)
+  v1_int  <- as.integer(parsed$var1)
+  v2_int  <- as.integer(parsed$var2)
+
+  X_drm <- build_drm_matrix(v1_int, v2_int, w, K)
+  X     <- cbind(X_drm, parsed$X_cov)
+
+  fit <- lm.fit(X, parsed$y)
+
+  n       <- parsed$n
+  p       <- ncol(X)
+  df_res  <- n - p
+  rss     <- sum(fit$residuals^2)
+  sigma2  <- rss / df_res
+
+  list(
+    coef      = fit$coefficients,
+    rss       = rss,
+    sigma2    = sigma2,
+    fitted    = fit$fitted.values,
+    residuals = fit$residuals,
+    df_resid  = df_res,
+    rank      = fit$rank,
+    X         = X
+  )
+}
+
+# Objective: RSS as a function of unconstrained theta (for optimizer).
+drm_objective <- function(theta, Z_w, parsed) {
+  w <- compute_weights(theta, Z_w)
+  drm_inner_fit(w, parsed)$rss
+}
+
+# Recover all K sum-to-zero scores from the K-1 contrast coefficients.
+# delta: (K-1)-vector of contrast coefficients
+# Returns K-vector of scores (sums to zero)
+recover_scores <- function(delta, K) {
+  C <- contr.sum(K)
+  drop(C %*% delta)
+}
+
+# Main fitting routine. Returns a raw fit object.
+drm_fit <- function(parsed, Z_w) {
+  p_w <- ncol(Z_w)
+
+  if (p_w == 1) {
+    # Scalar w: 1D optimization is faster and more reliable
+    opt <- optimize(
+      f        = function(theta) drm_objective(theta, Z_w, parsed),
+      interval = c(-10, 10)
+    )
+    theta_hat <- opt$minimum
+    rss_hat   <- opt$objective
+  } else {
+    # Multi-parameter weight model
+    theta0 <- rep(0, p_w)
+    opt <- optim(
+      par    = theta0,
+      fn     = function(theta) drm_objective(theta, Z_w, parsed),
+      method = "BFGS"
+    )
+    theta_hat <- opt$par
+    rss_hat   <- opt$value
+  }
+
+  w_hat    <- compute_weights(theta_hat, Z_w)
+  inner    <- drm_inner_fit(w_hat, parsed)
+
+  K      <- length(parsed$all_levels)
+  n_drm  <- K - 1
+  delta  <- inner$coef[seq_len(n_drm)]
+  scores <- recover_scores(delta, K)
+  names(scores) <- parsed$all_levels
+
+  cov_coef <- inner$coef[-(seq_len(n_drm))]
+
+  list(
+    theta_hat  = theta_hat,
+    w_hat      = w_hat,
+    scores     = scores,
+    cov_coef   = cov_coef,
+    inner      = inner,
+    rss        = rss_hat,
+    K          = K,
+    parsed     = parsed,
+    Z_w        = Z_w
+  )
+}
