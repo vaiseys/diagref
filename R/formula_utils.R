@@ -70,30 +70,3 @@ build_weight_matrix <- function(weight_formula, data_subset) {
   }
   model.matrix(weight_formula, data = data_subset)
 }
-
-# Build a small representative data frame for display in print()/tidy().
-# Categorical columns (factor, character, or integer ≤ 10 levels) are shown
-# at all unique combinations; continuous columns are fixed at their sample
-# mean. Returns NULL when all predictors are continuous (no natural grouping).
-make_representative_data <- function(weight_data) {
-  if (is.null(weight_data)) return(NULL)
-
-  is_cat <- function(col) {
-    is.factor(col) || is.character(col) ||
-      (is.integer(col) && length(unique(col)) <= 10L)
-  }
-  cat_flag <- vapply(weight_data, is_cat, logical(1))
-
-  if (!any(cat_flag)) return(NULL)
-
-  cat_data <- weight_data[, cat_flag, drop = FALSE]
-  u_cat    <- unique(cat_data)
-  u_cat    <- u_cat[do.call(order, as.list(u_cat)), , drop = FALSE]
-  rownames(u_cat) <- NULL
-
-  if (all(cat_flag)) return(u_cat)
-
-  cont_data <- weight_data[, !cat_flag, drop = FALSE]
-  cont_rep  <- as.data.frame(lapply(cont_data, function(col) rep(mean(col), nrow(u_cat))))
-  cbind(u_cat, cont_rep)[, names(weight_data), drop = FALSE]
-}

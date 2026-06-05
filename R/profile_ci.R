@@ -78,11 +78,11 @@ profile_ci_lc <- function(raw, z, level = 0.95, n_grid = 200) {
     opt_alpha <- function(eta, alpha_start) {
       if (length(alpha_start) == 1L) {
         opt <- optimize(function(a) neg_ll_c(eta, a),
-                        interval = alpha_start + c(-5, 5))
+                        interval = alpha_start + c(-8, 8))
         list(val = -opt$objective, par = opt$minimum)
       } else {
         opt <- optim(alpha_start, function(a) neg_ll_c(eta, a),
-                     method = "BFGS", control = list(maxit = 100))
+                     method = "BFGS", control = list(maxit = 500, reltol = 1e-10))
         list(val = -opt$value, par = opt$par)
       }
     }
@@ -119,22 +119,29 @@ profile_ci_lc <- function(raw, z, level = 0.95, n_grid = 200) {
 }
 
 # Dispatcher — chooses the right CI strategy based on the weight model.
-# rep_data: representative display rows from make_representative_data(); NULL
-# for purely continuous weight predictors (no categorical grouping exists).
-compute_profile_ci <- function(raw, rep_data = NULL, weight_formula = NULL,
-                                level = 0.95, n_grid = 200) {
+# For p_w == 1: 1D grid scan.
+# For p_w > 1: profile each theta_j individually using profile_ci_lc with
+# z = e_j. Falls back to Wald CI (logit scale) if the profile scan fails
+# (flat likelihood or numerical issues near zero coefficients).
+compute_profile_ci <- function(raw, level = 0.95, n_grid = 200) {
   p_w <- length(raw$theta_hat)
 
   if (p_w == 1) {
     profile_ci_scalar(raw, level = level, n_grid = n_grid)
-  } else if (!is.null(rep_data) && nrow(rep_data) <= 20) {
-    # Profile CI for each representative point's predicted w = plogis(z'theta)
-    Z_rep <- build_weight_matrix(weight_formula, rep_data)
-    lapply(seq_len(nrow(Z_rep)), function(i) {
-      profile_ci_lc(raw, Z_rep[i, ], level = level, n_grid = n_grid)
-    })
   } else {
-    # Purely continuous predictors: tidy() uses delta method on logit scale.
-    NULL
+    I_p   <- diag(p_w)
+    z_crit <- qnorm(1 - (1 - level) / 2)
+    lapply(seq_len(p_w), function(j) {
+      ci <- suppressWarnings(
+        profile_ci_lc(raw, I_p[j, ], level = level, n_grid = n_grid)
+      )
+      # Wald fallback when profile scan finds nothing (near-zero / flat LL)
+      if (anyNA(ci$ci_eta) && !anyNA(raw$vcov_theta)) {
+        se_j      <- sqrt(raw$vcov_theta[j, j])
+        ci$ci_eta <- raw$theta_hat[j] + c(-z_crit, z_crit) * se_j
+        ci$ci_w   <- plogis(ci$ci_eta)
+      }
+      ci
+    })
   }
 }

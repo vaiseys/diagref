@@ -10,33 +10,15 @@ print.diagref_fit <- function(x, ...) {
       cat(sprintf("  [%.4f, %.4f] (%d%% profile CI)\n",
                   x$ci$ci_w[1], x$ci$ci_w[2], round(x$level * 100)))
     } else cat("\n")
-  } else if (!is.null(x$rep_data)) {
-    cat("Weights (w) by group:\n")
-    rep_data  <- x$rep_data
-    Z_rep     <- build_weight_matrix(x$weight_formula, rep_data)
-    w_vals    <- plogis(drop(Z_rep %*% x$theta_hat))
-    labels    <- vapply(seq_len(nrow(rep_data)), function(i) {
-      row_vals <- lapply(rep_data[i, , drop = FALSE], function(v) {
-        if (is.double(v)) sprintf("%.2f", v) else as.character(v)
-      })
-      paste(paste(names(row_vals), unlist(row_vals), sep = "="), collapse = ", ")
-    }, character(1))
-    has_group_ci <- !is.null(x$ci) && length(x$ci) == length(w_vals)
-    for (i in seq_along(w_vals)) {
-      if (has_group_ci) {
-        ci_i <- x$ci[[i]]$ci_w
-        cat(sprintf("  %s: w = %.4f  [%.4f, %.4f] (%d%% profile CI)\n",
-                    labels[i], w_vals[i], ci_i[1], ci_i[2],
-                    round(x$level * 100)))
-      } else {
-        cat(sprintf("  %s: w = %.4f\n", labels[i], w_vals[i]))
-      }
-    }
   } else {
-    cat("Weight model (logit scale):\n")
-    for (i in seq_along(x$theta_hat)) {
-      cat(sprintf("  %s: %.4f\n", colnames(x$Z_w)[i], x$theta_hat[i]))
+    # Multi-param weight model: show logit(w) equation with coefficients.
+    theta  <- x$theta_hat
+    cnames <- colnames(x$Z_w)
+    eq     <- sprintf("%.4f", theta[1])
+    for (j in seq_along(theta)[-1]) {
+      eq <- paste0(eq, sprintf(" %+.4f * %s", theta[j], cnames[j]))
     }
+    cat(sprintf("Weight model: logit(w) = %s\n", eq))
   }
 
   cat("\nScores (", x$parsed$var1_name, "/", x$parsed$var2_name, "):\n", sep = "")
@@ -116,60 +98,16 @@ tidy.diagref_fit <- function(x, ...) {
       conf.low  = ci_w[1],
       conf.high = ci_w[2]
     )
-  } else if (!is.null(x$rep_data)) {
-    # Multi-param weight model with categorical (or mixed) predictors.
-    # Show predicted w on the probability scale for each representative point
-    # (unique categorical patterns, continuous predictors at their sample mean).
-    rep_data <- x$rep_data
-    Z_rep    <- build_weight_matrix(x$weight_formula, rep_data)
-    lin_pred <- drop(Z_rep %*% x$theta_hat)
-    w_pred   <- plogis(lin_pred)
-
-    if (has_vcov) {
-      se_lin <- vapply(seq_len(nrow(Z_rep)), function(i) {
-        l <- Z_rep[i, ]
-        sqrt(max(0, as.numeric(t(l) %*% vcov_w %*% l)))
-      }, numeric(1))
-      se_w <- se_lin * w_pred * (1 - w_pred)
-    } else {
-      se_lin <- rep(NA_real_, nrow(rep_data))
-      se_w   <- rep(NA_real_, nrow(rep_data))
-    }
-
-    if (!is.null(x$ci) && length(x$ci) == nrow(rep_data)) {
-      conf_low  <- vapply(x$ci, function(ci) ci$ci_w[1], numeric(1))
-      conf_high <- vapply(x$ci, function(ci) ci$ci_w[2], numeric(1))
-    } else if (has_vcov) {
-      conf_low  <- plogis(lin_pred - z_crit * se_lin)
-      conf_high <- plogis(lin_pred + z_crit * se_lin)
-    } else {
-      conf_low  <- rep(NA_real_, nrow(rep_data))
-      conf_high <- rep(NA_real_, nrow(rep_data))
-    }
-
-    labels <- vapply(seq_len(nrow(rep_data)), function(i) {
-      row_vals <- lapply(rep_data[i, , drop = FALSE], function(v) {
-        if (is.double(v)) sprintf("%.2f", v) else as.character(v)
-      })
-      paste(paste(names(row_vals), unlist(row_vals), sep = "="), collapse = ", ")
-    }, character(1))
-
-    w_rows <- tibble::tibble(
-      term      = paste0("w[", labels, "]"),
-      type      = "weight",
-      estimate  = w_pred,
-      std.error = se_w,
-      statistic = NA_real_,
-      p.value   = NA_real_,
-      conf.low  = conf_low,
-      conf.high = conf_high
-    )
   } else {
-    # Purely continuous weight predictors: report logit-scale theta coefficients.
-    # Use plogis(estimate) to get the predicted probability at a covariate value.
+    # Multi-param weight model: logit-scale theta coefficients.
+    # Profile CI for each theta_j (profile_ci_lc with z = e_j).
     se_theta <- if (has_vcov) sqrt(pmax(0, diag(vcov_w))) else rep(NA_real_, length(x$theta_hat))
     z_stat   <- x$theta_hat / se_theta
     p_val    <- 2 * pnorm(abs(z_stat), lower.tail = FALSE)
+
+    has_profile <- !is.null(x$ci) && length(x$ci) == length(x$theta_hat)
+    conf_low  <- if (has_profile) vapply(x$ci, function(ci) ci$ci_eta[1], numeric(1)) else x$theta_hat - z_crit * se_theta
+    conf_high <- if (has_profile) vapply(x$ci, function(ci) ci$ci_eta[2], numeric(1)) else x$theta_hat + z_crit * se_theta
 
     w_rows <- tibble::tibble(
       term      = paste0("w[", colnames(x$Z_w), "]"),
@@ -178,8 +116,8 @@ tidy.diagref_fit <- function(x, ...) {
       std.error = se_theta,
       statistic = z_stat,
       p.value   = p_val,
-      conf.low  = x$theta_hat - z_crit * se_theta,
-      conf.high = x$theta_hat + z_crit * se_theta
+      conf.low  = conf_low,
+      conf.high = conf_high
     )
   }
 
