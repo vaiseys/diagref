@@ -7,7 +7,7 @@ S3method(augment, diagref_fit)
 S3method(print, diagref_fit)
 S3method(logLik, diagref_fit)
 importFrom(stats, lm.fit, logLik, model.matrix, model.frame, model.response,
-           terms, plogis, qlogis, optimize, optim, pt, qt, pchisq, qchisq,
-           delete.response, setNames, na.omit)
+           terms, plogis, qlogis, optimize, optim, pf, pnorm, qnorm,
+           pt, qt, pchisq, qchisq, delete.response, setNames, na.omit)
 importFrom(tibble, tibble, as_tibble)
 importFrom(generics, tidy, glance, augment)

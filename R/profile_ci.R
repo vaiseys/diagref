@@ -1,6 +1,4 @@
-# Profile likelihood confidence intervals for the weight parameters (theta).
-# For the scalar case this is a 1D scan; for multi-parameter weights we
-# profile each theta_j with the rest re-optimized at each grid point.
+# Profile likelihood confidence intervals for weight parameters.
 
 # Log-likelihood for Gaussian model (up to constant).
 drm_loglik <- function(theta, Z_w, parsed) {
@@ -11,101 +9,142 @@ drm_loglik <- function(theta, Z_w, parsed) {
 }
 
 # Profile CI for a single scalar theta (1D case).
-# Returns list: ci_theta (on logit scale), ci_w (on [0,1] scale), profile_grid
-profile_ci_scalar <- function(fit_obj, level = 0.95, n_grid = 200) {
-  parsed    <- fit_obj$parsed
-  Z_w       <- fit_obj$Z_w
-  theta_hat <- fit_obj$theta_hat
+profile_ci_scalar <- function(raw, level = 0.95, n_grid = 200) {
+  parsed    <- raw$parsed
+  Z_w       <- raw$Z_w
+  theta_hat <- raw$theta_hat
   ll_hat    <- drm_loglik(theta_hat, Z_w, parsed)
+  cutoff    <- qchisq(level, df = 1) / 2
 
-  # Chi-squared cutoff (1 df)
-  cutoff <- qchisq(level, df = 1) / 2
+  theta_grid <- seq(max(theta_hat - 6, -10), min(theta_hat + 6, 10),
+                    length.out = n_grid)
+  ll_grid    <- vapply(theta_grid,
+                       function(th) drm_loglik(th, Z_w, parsed), numeric(1))
 
-  theta_grid <- seq(
-    max(theta_hat - 6, -10),
-    min(theta_hat + 6,  10),
-    length.out = n_grid
-  )
-
-  ll_grid <- vapply(theta_grid, function(th) {
-    drm_loglik(th, Z_w, parsed)
-  }, numeric(1))
-
-  # Find crossing points (ll_hat - ll > cutoff)
   in_ci <- (ll_hat - ll_grid) <= cutoff
-
   if (!any(in_ci)) {
-    warning("Profile likelihood CI not found within search range.", call. = FALSE)
+    warning("Profile CI not found within search range.", call. = FALSE)
     ci_theta <- c(NA_real_, NA_real_)
   } else {
     ci_theta <- c(theta_grid[which(in_ci)[1]], theta_grid[rev(which(in_ci))[1]])
   }
 
-  ci_w <- plogis(ci_theta)
-
   list(
-    ci_theta    = ci_theta,
-    ci_w        = ci_w,
-    profile_grid = tibble::tibble(
-      theta = theta_grid,
-      w     = plogis(theta_grid),
-      loglik = ll_grid
-    ),
-    level = level
+    ci_theta     = ci_theta,
+    ci_w         = plogis(ci_theta),
+    profile_grid = tibble::tibble(theta  = theta_grid,
+                                  w      = plogis(theta_grid),
+                                  loglik = ll_grid),
+    level        = level
   )
 }
 
-# Profile CI for multi-parameter weight model.
-# Profiles each theta_j independently (others re-optimized).
-profile_ci_multi <- function(fit_obj, level = 0.95, n_grid = 100) {
-  parsed    <- fit_obj$parsed
-  Z_w       <- fit_obj$Z_w
-  theta_hat <- fit_obj$theta_hat
+# Profile CI for a predicted weight corresponding to a linear combination
+# eta = z' * theta.  For a group with weight-model row z, this gives a CI
+# on the probability scale that is bounded in [0,1] and asymmetric when w
+# is near the boundary — unlike the delta method approximation.
+#
+# Uses a null-space parameterisation: for fixed eta, theta lives on the
+# (p_w-1)-dimensional affine subspace {theta : z'theta = eta}.  We optimise
+# over that subspace with warm-starting from the centre of the grid outward.
+profile_ci_lc <- function(raw, z, level = 0.95, n_grid = 200) {
+  parsed    <- raw$parsed
+  Z_w       <- raw$Z_w
+  theta_hat <- raw$theta_hat
   p_w       <- length(theta_hat)
-  ll_hat    <- drm_loglik(theta_hat, Z_w, parsed)
-  cutoff    <- qchisq(level, df = 1) / 2
 
-  ci_list <- vector("list", p_w)
+  eta_hat <- as.numeric(z %*% theta_hat)
+  ll_hat  <- drm_loglik(theta_hat, Z_w, parsed)
+  cutoff  <- qchisq(level, df = 1) / 2
 
-  for (j in seq_len(p_w)) {
-    theta_j_grid <- seq(theta_hat[j] - 4, theta_hat[j] + 4, length.out = n_grid)
+  eta_grid <- seq(eta_hat - 6, eta_hat + 6, length.out = n_grid)
+  ll_grid  <- numeric(n_grid)
 
-    ll_profile <- vapply(theta_j_grid, function(th_j) {
-      # Re-optimize over all other theta with theta_j fixed
-      if (p_w == 1) return(drm_loglik(th_j, Z_w, parsed))
+  if (p_w == 1) {
+    ll_grid <- vapply(eta_grid,
+                      function(eta) drm_loglik(eta, Z_w, parsed), numeric(1))
+  } else {
+    z_sq   <- sum(z^2)
+    Q      <- qr.Q(qr(matrix(z, ncol = 1)), complete = TRUE)
+    N      <- Q[, -1, drop = FALSE]          # p_w x (p_w-1) null-space basis
+    alpha0 <- drop(t(N) %*% theta_hat)       # starting alpha at MLE
 
-      theta_init <- theta_hat[-j]
-      opt <- optim(
-        par    = theta_init,
-        fn     = function(th_rest) {
-          th_full <- numeric(p_w)
-          th_full[j]  <- th_j
-          th_full[-j] <- th_rest
-          -drm_loglik(th_full, Z_w, parsed)
-        },
-        method = "BFGS"
-      )
-      -opt$value
-    }, numeric(1))
-
-    in_ci    <- (ll_hat - ll_profile) <= cutoff
-    ci_theta <- if (any(in_ci)) {
-      c(theta_j_grid[which(in_ci)[1]], theta_j_grid[rev(which(in_ci))[1]])
-    } else {
-      c(NA_real_, NA_real_)
+    # Constrained -loglik for a given eta and free parameters alpha
+    neg_ll_c <- function(eta, alpha) {
+      theta <- (eta / z_sq) * z + drop(N %*% alpha)
+      -drm_loglik(theta, Z_w, parsed)
     }
 
-    ci_list[[j]] <- list(ci_theta = ci_theta, ci_w = plogis(ci_theta))
+    opt_alpha <- function(eta, alpha_start) {
+      if (length(alpha_start) == 1L) {
+        opt <- optimize(function(a) neg_ll_c(eta, a),
+                        interval = alpha_start + c(-5, 5))
+        list(val = -opt$objective, par = opt$minimum)
+      } else {
+        opt <- optim(alpha_start, function(a) neg_ll_c(eta, a),
+                     method = "BFGS", control = list(maxit = 100))
+        list(val = -opt$value, par = opt$par)
+      }
+    }
+
+    # Warm-start scanning outward from the centre in both directions
+    centre <- which.min(abs(eta_grid - eta_hat))
+
+    alpha_cur <- alpha0
+    for (k in centre:n_grid) {
+      res          <- opt_alpha(eta_grid[k], alpha_cur)
+      ll_grid[k]   <- res$val
+      alpha_cur    <- res$par
+    }
+
+    alpha_cur <- alpha0
+    for (k in seq_len(centre - 1L)) {
+      idx          <- centre - k
+      res          <- opt_alpha(eta_grid[idx], alpha_cur)
+      ll_grid[idx] <- res$val
+      alpha_cur    <- res$par
+    }
   }
 
-  ci_list
+  in_ci <- (ll_hat - ll_grid) <= cutoff
+  if (!any(in_ci)) {
+    warning("Profile CI not found within search range; try larger n_grid.",
+            call. = FALSE)
+    ci_eta <- c(NA_real_, NA_real_)
+  } else {
+    ci_eta <- c(eta_grid[which(in_ci)[1]], eta_grid[rev(which(in_ci))[1]])
+  }
+
+  list(ci_w = plogis(ci_eta), ci_eta = ci_eta, level = level)
 }
 
-# Dispatcher
-compute_profile_ci <- function(fit_obj, level = 0.95, n_grid = 200) {
-  if (length(fit_obj$theta_hat) == 1) {
-    profile_ci_scalar(fit_obj, level = level, n_grid = n_grid)
+# Compute profile CIs for all unique weight predictor patterns (categorical case).
+profile_ci_groups <- function(raw, weight_data, weight_formula,
+                               level = 0.95, n_grid = 200) {
+  unique_wd <- unique(weight_data)
+  unique_wd <- unique_wd[do.call(order, as.list(unique_wd)), , drop = FALSE]
+  Z_uniq    <- build_weight_matrix(weight_formula, unique_wd)
+
+  lapply(seq_len(nrow(Z_uniq)), function(i) {
+    profile_ci_lc(raw, Z_uniq[i, ], level = level, n_grid = n_grid)
+  })
+}
+
+# Dispatcher — chooses the right CI strategy based on the weight model.
+compute_profile_ci <- function(raw, weight_data = NULL, weight_formula = NULL,
+                                level = 0.95, n_grid = 200) {
+  p_w <- length(raw$theta_hat)
+
+  if (p_w == 1) {
+    # Scalar w: standard 1D profile scan
+    profile_ci_scalar(raw, level = level, n_grid = n_grid)
+  } else if (!is.null(weight_data) && nrow(unique(weight_data)) <= 20) {
+    # Categorical weight predictors: profile CI for each group's predicted w
+    profile_ci_groups(raw, weight_data, weight_formula,
+                      level = level, n_grid = n_grid)
   } else {
-    profile_ci_multi(fit_obj, level = level, n_grid = n_grid)
+    # Continuous predictors: tidy() uses delta method on logit scale; no
+    # separate profile CI needed during fitting.
+    NULL
   }
 }

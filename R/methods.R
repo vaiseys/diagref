@@ -20,8 +20,16 @@ print.diagref_fit <- function(x, ...) {
       row_vals <- lapply(unique_wd[i, , drop = FALSE], as.character)
       paste(paste(names(row_vals), unlist(row_vals), sep = "="), collapse = ", ")
     }, character(1))
+    has_group_ci <- !is.null(x$ci) && length(x$ci) == length(w_vals)
     for (i in seq_along(w_vals)) {
-      cat(sprintf("  %s: w = %.4f\n", labels[i], w_vals[i]))
+      if (has_group_ci) {
+        ci_i <- x$ci[[i]]$ci_w
+        cat(sprintf("  %s: w = %.4f  [%.4f, %.4f] (%d%% profile CI)\n",
+                    labels[i], w_vals[i], ci_i[1], ci_i[2],
+                    round(x$level * 100)))
+      } else {
+        cat(sprintf("  %s: w = %.4f\n", labels[i], w_vals[i]))
+      }
     }
   }
 
@@ -117,16 +125,25 @@ tidy.diagref_fit <- function(x, ...) {
       lin_pred <- drop(Z_uniq %*% x$theta_hat)
       w_pred   <- plogis(lin_pred)
 
+      # SE: delta method (approximate, shown for reference)
       if (has_vcov) {
         se_lin <- vapply(seq_len(nrow(Z_uniq)), function(i) {
           l <- Z_uniq[i, ]
           sqrt(max(0, as.numeric(t(l) %*% vcov_w %*% l)))
         }, numeric(1))
-        se_w      <- se_lin * w_pred * (1 - w_pred)
-        conf_low  <- plogis(lin_pred - z_crit * se_lin)
-        conf_high <- plogis(lin_pred + z_crit * se_lin)
+        se_w <- se_lin * w_pred * (1 - w_pred)
       } else {
-        se_w <- conf_low <- conf_high <- rep(NA_real_, nrow(unique_wd))
+        se_w <- rep(NA_real_, nrow(unique_wd))
+      }
+
+      # CIs: profile likelihood (stored in fit object during diagref())
+      if (!is.null(x$ci) && length(x$ci) == nrow(unique_wd)) {
+        conf_low  <- vapply(x$ci, function(ci) ci$ci_w[1], numeric(1))
+        conf_high <- vapply(x$ci, function(ci) ci$ci_w[2], numeric(1))
+      } else {
+        # Fallback to delta method if profile CI unavailable
+        conf_low  <- if (has_vcov) plogis(lin_pred - z_crit * se_lin) else rep(NA_real_, nrow(unique_wd))
+        conf_high <- if (has_vcov) plogis(lin_pred + z_crit * se_lin) else rep(NA_real_, nrow(unique_wd))
       }
 
       labels <- vapply(seq_len(nrow(unique_wd)), function(i) {

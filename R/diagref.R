@@ -40,7 +40,11 @@ diagref <- function(formula, data, weight_formula = NULL, level = 0.95,
   }
 
   raw <- drm_fit(parsed, Z_w)
-  ci  <- compute_profile_ci(raw, level = level, n_grid = n_grid)
+  ci  <- compute_profile_ci(raw,
+                             weight_data    = weight_data,
+                             weight_formula = weight_formula,
+                             level          = level,
+                             n_grid         = n_grid)
 
   structure(
     list(
