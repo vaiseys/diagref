@@ -39,9 +39,12 @@ diagref <- function(formula, data, weight_formula = NULL, level = 0.95,
     NULL
   }
 
+  # Representative display data: unique categorical patterns × mean continuous
+  rep_data <- make_representative_data(weight_data)
+
   raw <- drm_fit(parsed, Z_w)
   ci  <- compute_profile_ci(raw,
-                             weight_data    = weight_data,
+                             rep_data       = rep_data,
                              weight_formula = weight_formula,
                              level          = level,
                              n_grid         = n_grid)
@@ -51,6 +54,7 @@ diagref <- function(formula, data, weight_formula = NULL, level = 0.95,
       formula        = formula,
       weight_formula = weight_formula,
       weight_data    = weight_data,
+      rep_data       = rep_data,
       theta_hat      = raw$theta_hat,
       vcov_theta     = raw$vcov_theta,
       w_hat          = raw$w_hat,

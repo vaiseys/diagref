@@ -118,33 +118,23 @@ profile_ci_lc <- function(raw, z, level = 0.95, n_grid = 200) {
   list(ci_w = plogis(ci_eta), ci_eta = ci_eta, level = level)
 }
 
-# Compute profile CIs for all unique weight predictor patterns (categorical case).
-profile_ci_groups <- function(raw, weight_data, weight_formula,
-                               level = 0.95, n_grid = 200) {
-  unique_wd <- unique(weight_data)
-  unique_wd <- unique_wd[do.call(order, as.list(unique_wd)), , drop = FALSE]
-  Z_uniq    <- build_weight_matrix(weight_formula, unique_wd)
-
-  lapply(seq_len(nrow(Z_uniq)), function(i) {
-    profile_ci_lc(raw, Z_uniq[i, ], level = level, n_grid = n_grid)
-  })
-}
-
 # Dispatcher — chooses the right CI strategy based on the weight model.
-compute_profile_ci <- function(raw, weight_data = NULL, weight_formula = NULL,
+# rep_data: representative display rows from make_representative_data(); NULL
+# for purely continuous weight predictors (no categorical grouping exists).
+compute_profile_ci <- function(raw, rep_data = NULL, weight_formula = NULL,
                                 level = 0.95, n_grid = 200) {
   p_w <- length(raw$theta_hat)
 
   if (p_w == 1) {
-    # Scalar w: standard 1D profile scan
     profile_ci_scalar(raw, level = level, n_grid = n_grid)
-  } else if (!is.null(weight_data) && nrow(unique(weight_data)) <= 20) {
-    # Categorical weight predictors: profile CI for each group's predicted w
-    profile_ci_groups(raw, weight_data, weight_formula,
-                      level = level, n_grid = n_grid)
+  } else if (!is.null(rep_data) && nrow(rep_data) <= 20) {
+    # Profile CI for each representative point's predicted w = plogis(z'theta)
+    Z_rep <- build_weight_matrix(weight_formula, rep_data)
+    lapply(seq_len(nrow(Z_rep)), function(i) {
+      profile_ci_lc(raw, Z_rep[i, ], level = level, n_grid = n_grid)
+    })
   } else {
-    # Continuous predictors: tidy() uses delta method on logit scale; no
-    # separate profile CI needed during fitting.
+    # Purely continuous predictors: tidy() uses delta method on logit scale.
     NULL
   }
 }
