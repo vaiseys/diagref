@@ -333,3 +333,24 @@ test_that("bad input gives clear errors", {
   expect_error(diagref(y ~ orig + dest, data = df, weight_formula = ~g + I(2 * g)),
                "collinear")
 })
+
+# ---- Example data -----------------------------------------------------------
+
+test_that("gss2024 is consistent with its documentation", {
+  g <- gss2024
+  expect_equal(dim(g), c(3230L, 19L))
+  expect_false(anyNA(g$degree) || anyNA(g$pardeg))
+  expect_equal(g$pardeg, pmax(g$madeg, g$padeg, na.rm = TRUE))
+  for (v in c("degree", "madeg", "padeg", "pardeg")) {
+    expect_true(all(g[[v]] %in% c(0:4, NA)))
+  }
+  expect_true(all(g$female %in% c(0L, 1L, NA)))
+  expect_true(all(g$partyid %in% c(0:6, NA)))
+  expect_true(all(g$polviews %in% c(1:7, NA)))
+})
+
+test_that("diagref runs on gss2024", {
+  fit <- diagref(polviews ~ degree + pardeg + female + age, data = gss2024)
+  expect_equal(names(fit$scores), as.character(0:4))
+  expect_true(coef(fit)[["w"]] > 0 && coef(fit)[["w"]] < 1)
+})

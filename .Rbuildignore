@@ -2,6 +2,6 @@
 ^\.Rproj\.user$
 ^\.positai$
 ^\.claude$
-^gss2024\.rds$
 ^sv-manual-test\.R$
 \.DS_Store$
+^data-raw$

@@ -1,0 +1,60 @@
+#' Educational mobility and outcomes: General Social Survey 2024
+#'
+#' A small extract of the 2024 General Social Survey (GSS) for trying out
+#' diagonal reference models of educational mobility: respondents' own
+#' highest degree, their parents' highest degree, a few covariates, and ten
+#' outcomes from different domains. It includes the 3,230 respondents for
+#' whom both `degree` and `pardeg` are known.
+#'
+#' Variables keep their GSS names and codes, with three exceptions: `pardeg`
+#' and `female` are derived, and `partyid` code 7 ("other party") is set to
+#' `NA` so that the variable is a 0-6 scale. Some items were asked of only a
+#' random subset of respondents, so they have more missing values (`fefam`
+#' and `wordsum`, about 2,100 each).
+#'
+#' @format A tibble with 3,230 rows and 19 columns:
+#' \describe{
+#'   \item{id}{GSS respondent id.}
+#'   \item{degree}{Respondent's highest degree: 0 = less than high school,
+#'     1 = high school, 2 = associate/junior college, 3 = bachelor's,
+#'     4 = graduate.}
+#'   \item{madeg, padeg}{Mother's and father's highest degree (same codes).
+#'     For respondents not raised by a mother and father, the GSS records the
+#'     youngest and oldest same-sex parent.}
+#'   \item{pardeg}{Parents' highest degree: the higher of `madeg` and
+#'     `padeg`, or the one that is known if only one is (730 respondents).}
+#'   \item{female}{1 = female, 0 = male.}
+#'   \item{age}{Age in years; 89 means 89 or older.}
+#'   \item{race}{1 = white, 2 = black, 3 = other.}
+#'   \item{polviews}{Political views: 1 = extremely liberal to
+#'     7 = extremely conservative.}
+#'   \item{partyid}{Party identification: 0 = strong Democrat,
+#'     3 = independent, 6 = strong Republican.}
+#'   \item{fefam}{"It is much better for everyone involved if the man is the
+#'     achiever outside the home and the woman takes care of the home and
+#'     family": 1 = strongly agree to 4 = strongly disagree.}
+#'   \item{attend}{Attendance at religious services: 0 = never to
+#'     8 = several times a week.}
+#'   \item{happy}{General happiness: 1 = very happy, 2 = pretty happy,
+#'     3 = not too happy.}
+#'   \item{health}{Self-rated health: 1 = excellent, 2 = good, 3 = fair,
+#'     4 = poor.}
+#'   \item{childs}{Number of children ever had; 8 means eight or more.}
+#'   \item{wordsum}{Vocabulary test score, 0-10 words correct.}
+#'   \item{coninc}{Family income in constant dollars.}
+#'   \item{prestg10}{Occupational prestige score (2010 scale), 16-80.}
+#'   \item{wtssps}{Person post-stratification weight. Note that [diagref()]
+#'     does not yet use survey weights.}
+#' }
+#'
+#' @source General Social Survey 2024, NORC at the University of Chicago,
+#'   <https://gss.norc.org>. Built from the full GSS file by
+#'   `data-raw/gss2024.R` in the package source. Please cite the GSS as its
+#'   documentation asks if you use these data.
+#'
+#' @examples
+#' # Do gender-role attitudes follow one's own education or one's parents'?
+#' fit <- diagref(fefam ~ degree + pardeg + female + age, data = gss2024)
+#' fit
+#' @keywords datasets
+"gss2024"

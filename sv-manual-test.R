@@ -2,7 +2,7 @@
 library(tidyverse)
 library(broom)
 
-gss2024 <- readRDS("gss2024.rds") |> 
+gss2024 <- readRDS("data-raw/gss2024.rds") |> 
   haven::zap_labels()
 
 d <- gss2024 |> 

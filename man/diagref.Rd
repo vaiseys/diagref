@@ -55,20 +55,13 @@ Rows with a missing value in any variable of \code{formula} or \code{weight_form
 are dropped.
 }
 \examples{
-set.seed(1)
-n    <- 500
-orig <- sample(1:4, n, replace = TRUE)
-dest <- sample(1:4, n, replace = TRUE)
-female <- rbinom(n, 1, 0.5)
-y <- 0.6 * orig + 0.4 * dest + 0.3 * female + rnorm(n)
-df <- data.frame(y, orig, dest, female)
-
-fit <- diagref(y ~ orig + dest + female, data = df)
+# Political views by own and parents' education (GSS 2024)
+fit <- diagref(polviews ~ degree + pardeg + female + age, data = gss2024)
 fit
 tidy(fit)
 
-# Let the weight differ by gender
-fit2 <- diagref(y ~ orig + dest + female, data = df,
+# Let the weight of own education differ by gender
+fit2 <- diagref(polviews ~ degree + pardeg + female + age, data = gss2024,
                 weight_formula = ~ female)
 tidy(fit2)
 AIC(fit, fit2)
