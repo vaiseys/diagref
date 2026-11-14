@@ -6,3 +6,4 @@
 \.DS_Store$
 ^data-raw$
 ^TODO\.md$
+^README\.Rmd$

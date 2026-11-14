@@ -22,3 +22,5 @@ Config/roxygen2/version: 8.1.1
 Depends: 
     R (>= 3.5)
 LazyData: true
+URL: https://github.com/vaiseys/diagref
+BugReports: https://github.com/vaiseys/diagref/issues
