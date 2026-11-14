@@ -5,3 +5,4 @@
 ^sv-manual-test\.R$
 \.DS_Store$
 ^data-raw$
+^TODO\.md$
