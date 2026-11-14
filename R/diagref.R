@@ -1,65 +1,81 @@
 #' Fit a diagonal reference model
 #'
-#' @param formula A formula of the form `y ~ var1 + var2 + covariates`. The
-#'   first two RHS terms are the dyadic variables (e.g., origin/destination
-#'   class, partner1/partner2). Both are coerced to factors.
-#' @param data A data frame.
-#' @param weight_formula Optional one-sided formula specifying what predicts
-#'   the salience weight `w`. Default (`NULL`) estimates a single scalar `w`.
-#'   Example: `~gender` estimates a separate `w` per gender group.
-#' @param level Confidence level for profile likelihood CIs. Default `0.95`.
-#' @param n_grid Number of grid points for profile CI search. Default `200`.
+#' Fits Sobel's diagonal reference model (DRM) for an outcome that depends on
+#' a pair of positions drawn from the same set of categories, such as origin
+#' and destination class, or the education of two parents or partners:
 #'
-#' @return An object of class `diagref_fit`. Use [tidy()], [glance()], and
-#'   [augment()] to extract results.
+#' \deqn{y_i = w_i \mu_{a_i} + (1 - w_i) \mu_{b_i} + x_i'\gamma + \varepsilon_i}
+#'
+#' Here \eqn{a_i} and \eqn{b_i} are the categories of the two dyadic
+#' variables, \eqn{\mu_k} is the score of category \eqn{k} (the scores sum to
+#' zero, so the intercept is the mean score), and \eqn{w_i} is the weight, or
+#' relative salience, of the first variable. The weight is either a single
+#' constant or depends on predictors through
+#' \eqn{\mathrm{logit}(w_i) = z_i'\theta}.
+#'
+#' @details
+#' The model is fitted by maximum likelihood (equivalently, nonlinear least
+#' squares). For fixed weights the model is linear, so the scores and
+#' covariate coefficients are profiled out by OLS and only \eqn{\theta} is
+#' optimised numerically, using an analytic gradient. Predictors in
+#' `weight_formula` are standardised internally for the optimisation, and
+#' estimates are reported on their original scale.
+#'
+#' Standard errors come from the joint asymptotic covariance of all
+#' parameters, so uncertainty in the weight carries over to the scores and
+#' covariates. Confidence intervals for weight parameters (from [tidy()] or
+#' [confint()]) are profile-likelihood intervals; all others are Wald
+#' intervals.
+#'
+#' Rows with a missing value in any variable of `formula` or `weight_formula`
+#' are dropped.
+#'
+#' @param formula A formula `y ~ a + b + covariates`. The first two terms are
+#'   the dyadic variables; they are treated as categorical and must share
+#'   categories (numeric codes are fine). Further terms are covariates and
+#'   enter linearly, as in [lm()].
+#' @param data A data frame.
+#' @param weight_formula An optional one-sided formula for the weight, such
+#'   as `~ female` or `~ female + age`. The default, `NULL`, estimates a
+#'   single weight `w`.
+#'
+#' @return An object of class `diagref_fit`, with methods for [tidy()],
+#'   [glance()], [augment()], [coef()], [vcov()], [confint()], [logLik()]
+#'   (and therefore [AIC()] and [BIC()]), [nobs()] and [print()].
+#'
+#' @references
+#' Sobel, M. E. (1981). Diagonal mobility models: A substantively motivated
+#' class of designs for the analysis of mobility effects. *American
+#' Sociological Review*, 46(6), 893-906.
 #'
 #' @examples
-#' # Simulated data
 #' set.seed(1)
-#' n <- 500
-#' orig <- factor(sample(1:4, n, replace = TRUE))
-#' dest <- factor(sample(1:4, n, replace = TRUE))
-#' y <- 0.6 * as.numeric(orig) + 0.4 * as.numeric(dest) + rnorm(n)
-#' df <- data.frame(y, orig, dest)
-#' fit <- diagref(y ~ orig + dest, data = df)
+#' n    <- 500
+#' orig <- sample(1:4, n, replace = TRUE)
+#' dest <- sample(1:4, n, replace = TRUE)
+#' female <- rbinom(n, 1, 0.5)
+#' y <- 0.6 * orig + 0.4 * dest + 0.3 * female + rnorm(n)
+#' df <- data.frame(y, orig, dest, female)
+#'
+#' fit <- diagref(y ~ orig + dest + female, data = df)
+#' fit
 #' tidy(fit)
 #'
+#' # Let the weight differ by gender
+#' fit2 <- diagref(y ~ orig + dest + female, data = df,
+#'                 weight_formula = ~ female)
+#' tidy(fit2)
+#' AIC(fit, fit2)
+#'
 #' @export
-diagref <- function(formula, data, weight_formula = NULL, level = 0.95,
-                    n_grid = 200) {
-  parsed      <- parse_diagref_formula(formula, data)
-  data_subset <- data[parsed$kept_rows, , drop = FALSE]
-  Z_w         <- build_weight_matrix(weight_formula, data_subset)
-
-  # Keep original weight predictor columns for per-group display in tidy()
-  weight_data <- if (!is.null(weight_formula)) {
-    wvars <- intersect(all.vars(weight_formula), names(data_subset))
-    data_subset[, wvars, drop = FALSE]
-  } else {
-    NULL
-  }
-
-  raw <- drm_fit(parsed, Z_w)
-  ci  <- compute_profile_ci(raw, level = level, n_grid = n_grid)
-
+diagref <- function(formula, data, weight_formula = NULL) {
+  d   <- diagref_data(formula, data, weight_formula)
+  fit <- drm_fit(d)
   structure(
-    list(
-      formula        = formula,
-      weight_formula = weight_formula,
-      weight_data    = weight_data,
-      theta_hat      = raw$theta_hat,
-      vcov_theta     = raw$vcov_theta,
-      w_hat          = raw$w_hat,
-      scores         = raw$scores,
-      cov_coef       = raw$cov_coef,
-      inner          = raw$inner,
-      rss            = raw$rss,
-      ci             = ci,
-      level          = level,
-      parsed         = parsed,
-      Z_w            = Z_w,
-      K              = raw$K
-    ),
+    c(fit, list(call           = match.call(),
+                formula        = formula,
+                weight_formula = weight_formula,
+                data           = d)),
     class = "diagref_fit"
   )
 }

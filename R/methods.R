@@ -1,202 +1,184 @@
-#' @export
-print.diagref_fit <- function(x, ...) {
-  cat("Diagonal Reference Model\n")
-  cat("Formula: "); print(x$formula)
-  cat("\n")
+#' Tidy, glance, augment and confint methods for diagonal reference models
+#'
+#' `tidy()` returns one row per parameter: the category scores, the weight,
+#' and the covariate coefficients. With a single weight it is reported as
+#' `w` on the probability scale. With a weight model it is reported as
+#' logit-scale coefficients `w[...]`, so that `w[(Intercept)]` is logit(w)
+#' when all weight predictors are zero.
+#'
+#' Standard errors come from the joint covariance of all parameters. For the
+#' weight parameters, confidence intervals are profile-likelihood intervals,
+#' which respect the 0-1 range of `w` and can be asymmetric; an infinite
+#' endpoint means that the likelihood is flat in that direction (a weight
+#' heading to 0 or 1). Likewise, the tests of weight-model coefficients are
+#' likelihood-ratio tests, with `statistic` the signed square root of the LR
+#' statistic, so they agree with the intervals. Near the boundary the Wald
+#' standard error of a weight coefficient becomes very large and should not
+#' be used for inference. A single weight `w` has no test, because `w = 0`
+#' is not usually of interest. All other parameters have Wald intervals and
+#' t tests.
+#'
+#' @param x,object A `diagref_fit` object.
+#' @param conf.int Whether to include confidence intervals.
+#' @param conf.level,level Confidence level.
+#' @param parm Parameters to compute intervals for, by name or position
+#'   (default: all).
+#' @param ... Unused.
+#'
+#' @return `tidy()`: a tibble with columns `term`, `type` (`"score"`,
+#'   `"weight"` or `"covariate"`), `estimate`, `std.error`, `statistic`,
+#'   `p.value` and, optionally, `conf.low` and `conf.high`.
+#'
+#'   `glance()`: a one-row tibble of model statistics.
+#'
+#'   `augment()`: the model frame with columns `.fitted`, `.resid`, `.w`
+#'   (each observation's weight) and `.drm_term` (its weighted score,
+#'   \eqn{w_i \mu_{a_i} + (1 - w_i) \mu_{b_i}}).
+#'
+#'   `confint()`: a matrix with one row per parameter.
+#'
+#' @name diagref_tidiers
+NULL
 
-  if (length(x$theta_hat) == 1) {
-    cat(sprintf("Weight (w): %.4f", plogis(x$theta_hat)))
-    if (!is.null(x$ci)) {
-      cat(sprintf("  [%.4f, %.4f] (%d%% profile CI)\n",
-                  x$ci$ci_w[1], x$ci$ci_w[2], round(x$level * 100)))
-    } else cat("\n")
+#' @rdname diagref_tidiers
+#' @export
+tidy.diagref_fit <- function(x, conf.int = TRUE, conf.level = 0.95, ...) {
+  est  <- x$coefficients
+  se   <- sqrt(diag(x$vcov))
+  stat <- est / se
+  pval <- 2 * pt(abs(stat), x$df.residual, lower.tail = FALSE)
+
+  is_w <- x$term_type == "weight"
+  if (x$scalar_weight) {
+    stat[is_w] <- pval[is_w] <- NA_real_
   } else {
-    # Multi-param weight model: show logit(w) equation with coefficients.
-    theta  <- x$theta_hat
-    cnames <- colnames(x$Z_w)
-    eq     <- sprintf("%.4f", theta[1])
-    for (j in seq_along(theta)[-1]) {
-      eq <- paste0(eq, sprintf(" %+.4f * %s", theta[j], cnames[j]))
+    # Likelihood-ratio tests, consistent with the profile CIs. Wald tests are
+    # unreliable here: near w = 0 or 1 the SE explodes (Hauck-Donner effect).
+    for (j in seq_len(sum(is_w))) {
+      a  <- replace(numeric(sum(is_w)), j, 1)
+      lr <- profile_lr_test(x, a)
+      stat[is_w][j] <- lr[["statistic"]]
+      pval[is_w][j] <- lr[["p.value"]]
     }
-    cat(sprintf("Weight model: logit(w) = %s\n", eq))
   }
 
-  cat("\nScores (", x$parsed$var1_name, "/", x$parsed$var2_name, "):\n", sep = "")
-  print(round(x$scores, 4))
-
-  if (length(x$cov_coef) > 0) {
-    cat("\nCovariate coefficients:\n")
-    print(round(x$cov_coef, 4))
+  out <- tibble::tibble(
+    term      = names(est),
+    type      = x$term_type,
+    estimate  = unname(est),
+    std.error = unname(se),
+    statistic = unname(stat),
+    p.value   = unname(pval)
+  )
+  if (conf.int) {
+    ci <- confint(x, level = conf.level)
+    out$conf.low  <- unname(ci[, 1])
+    out$conf.high <- unname(ci[, 2])
   }
-
-  n       <- x$parsed$n
-  K       <- x$K
-  p_cov   <- length(x$cov_coef)
-  p_total <- (K - 1) + length(x$theta_hat) + p_cov
-  cat(sprintf("\nn = %d  |  df.resid = %d  |  sigma = %.4f\n",
-              n, x$inner$df_resid, sqrt(x$inner$sigma2)))
-  invisible(x)
+  out
 }
 
-#' @export
-tidy.diagref_fit <- function(x, ...) {
-  parsed <- x$parsed
-  K      <- x$K
-  n_drm  <- K - 1
-  inner  <- x$inner
-  df_r   <- inner$df_resid
-  level  <- x$level
-  t_crit <- qt(1 - (1 - level) / 2, df = df_r)
-  z_crit <- qnorm(1 - (1 - level) / 2)
-
-  # OLS variance-covariance for linear parameters
-  sigma2  <- inner$sigma2
-  XtX_inv <- tryCatch(
-    chol2inv(chol(crossprod(inner$X))),
-    error = function(e) solve(crossprod(inner$X))
-  )
-  se_coef <- sqrt(diag(XtX_inv) * sigma2)
-
-  # --- Score parameters ---
-  C         <- contr.sum(K)
-  se_delta  <- se_coef[seq_len(n_drm)]
-  var_mu    <- C %*% diag(se_delta^2, nrow = n_drm) %*% t(C)
-  se_mu     <- sqrt(pmax(diag(var_mu), 0))
-  t_scores  <- x$scores / se_mu
-
-  score_rows <- tibble::tibble(
-    term      = paste0("score[", parsed$all_levels, "]"),
-    type      = "score",
-    estimate  = x$scores,
-    std.error = se_mu,
-    statistic = t_scores,
-    p.value   = 2 * pt(abs(t_scores), df = df_r, lower.tail = FALSE),
-    conf.low  = x$scores - t_crit * se_mu,
-    conf.high = x$scores + t_crit * se_mu
-  )
-
-  # --- Weight parameter(s) ---
-  # Always show predicted weights on the probability scale for unique
-  # combinations of weight predictors.
-  vcov_w   <- x$vcov_theta
-  has_vcov <- !is.null(vcov_w) && !anyNA(vcov_w)
-
-  if (is.null(x$weight_formula)) {
-    # Scalar w: use profile CI; SE via delta method from Hessian
-    theta <- x$theta_hat
-    w_val <- plogis(theta)
-    se_w  <- if (has_vcov) sqrt(vcov_w[1, 1]) * w_val * (1 - w_val) else NA_real_
-    ci_w  <- x$ci$ci_w
-
-    w_rows <- tibble::tibble(
-      term      = "w",
-      type      = "weight",
-      estimate  = w_val,
-      std.error = se_w,
-      statistic = NA_real_,
-      p.value   = NA_real_,
-      conf.low  = ci_w[1],
-      conf.high = ci_w[2]
-    )
-  } else {
-    # Multi-param weight model: logit-scale theta coefficients.
-    # Profile CI for each theta_j (profile_ci_lc with z = e_j).
-    se_theta <- if (has_vcov) sqrt(pmax(0, diag(vcov_w))) else rep(NA_real_, length(x$theta_hat))
-    z_stat   <- x$theta_hat / se_theta
-    p_val    <- 2 * pnorm(abs(z_stat), lower.tail = FALSE)
-
-    has_profile <- !is.null(x$ci) && length(x$ci) == length(x$theta_hat)
-    conf_low  <- if (has_profile) vapply(x$ci, function(ci) ci$ci_eta[1], numeric(1)) else x$theta_hat - z_crit * se_theta
-    conf_high <- if (has_profile) vapply(x$ci, function(ci) ci$ci_eta[2], numeric(1)) else x$theta_hat + z_crit * se_theta
-
-    w_rows <- tibble::tibble(
-      term      = paste0("w[", colnames(x$Z_w), "]"),
-      type      = "weight",
-      estimate  = x$theta_hat,
-      std.error = se_theta,
-      statistic = z_stat,
-      p.value   = p_val,
-      conf.low  = conf_low,
-      conf.high = conf_high
-    )
-  }
-
-  # --- Covariate coefficients ---
-  cov_coef <- x$cov_coef
-  se_cov   <- se_coef[-(seq_len(n_drm))]
-  t_cov    <- cov_coef / se_cov
-
-  cov_rows <- tibble::tibble(
-    term      = names(cov_coef),
-    type      = "covariate",
-    estimate  = cov_coef,
-    std.error = se_cov,
-    statistic = t_cov,
-    p.value   = 2 * pt(abs(t_cov), df = df_r, lower.tail = FALSE),
-    conf.low  = cov_coef - t_crit * se_cov,
-    conf.high = cov_coef + t_crit * se_cov
-  )
-
-  do.call(rbind, list(score_rows, w_rows, cov_rows))
-}
-
+#' @rdname diagref_tidiers
 #' @export
 glance.diagref_fit <- function(x, ...) {
-  n      <- x$parsed$n
-  K      <- x$K
-  p_w    <- length(x$theta_hat)
-  p_cov  <- length(x$cov_coef)
-  p      <- (K - 1) + p_w + p_cov
-  df_res <- x$inner$df_resid
-  sigma  <- sqrt(x$inner$sigma2)
-  rss    <- x$rss
-
-  # Null model RSS (intercept only)
-  y      <- x$parsed$y
-  rss0   <- sum((y - mean(y))^2)
-  r2     <- 1 - rss / rss0
-
-  # F statistic
-  p_extra <- p - 1  # vs intercept-only
-  f_stat  <- ((rss0 - rss) / p_extra) / (rss / df_res)
-  p_f     <- 1 - pf(f_stat, p_extra, df_res)
-
+  y  <- x$data$y
+  ll <- logLik(x)
   tibble::tibble(
-    r.squared     = r2,
-    sigma         = sigma,
-    statistic     = f_stat,
-    p.value       = p_f,
-    df            = p,
-    df.residual   = df_res,
-    nobs          = n
+    r.squared   = 1 - x$rss / sum((y - mean(y))^2),
+    sigma       = x$sigma,
+    logLik      = as.numeric(ll),
+    AIC         = AIC(ll),
+    BIC         = BIC(ll),
+    deviance    = x$rss,
+    df.residual = x$df.residual,
+    nobs        = x$data$n
   )
 }
+
+#' @rdname diagref_tidiers
+#' @export
+augment.diagref_fit <- function(x, ...) {
+  d   <- x$data
+  s   <- unname(x$scores)
+  out <- tibble::as_tibble(d$mf)
+  out$.fitted   <- x$fitted
+  out$.resid    <- x$residuals
+  out$.w        <- x$w
+  out$.drm_term <- x$w * s[d$a] + (1 - x$w) * s[d$b]
+  out
+}
+
+#' @rdname diagref_tidiers
+#' @export
+confint.diagref_fit <- function(object, parm, level = 0.95, ...) {
+  est <- object$coefficients
+  if (missing(parm)) parm <- names(est)
+  if (is.numeric(parm)) parm <- names(est)[parm]
+
+  se <- sqrt(diag(object$vcov))
+  tq <- qt((1 + level) / 2, object$df.residual)
+  ci <- cbind(est - tq * se, est + tq * se)[parm, , drop = FALSE]
+
+  w_names <- names(est)[object$term_type == "weight"]
+  for (j in which(w_names %in% parm)) {
+    a <- replace(numeric(length(w_names)), j, 1)
+    bounds <- profile_ci_weight(object, a, level = level)
+    ci[w_names[j], ] <- if (object$scalar_weight) plogis(bounds) else bounds
+  }
+
+  pct <- format(100 * c(1 - level, 1 + level) / 2, trim = TRUE,
+                scientific = FALSE, digits = 3)
+  colnames(ci) <- paste(pct, "%")
+  ci
+}
+
+#' @export
+coef.diagref_fit <- function(object, ...) object$coefficients
+
+#' @export
+vcov.diagref_fit <- function(object, ...) object$vcov
+
+#' @export
+nobs.diagref_fit <- function(object, ...) object$data$n
 
 #' @export
 logLik.diagref_fit <- function(object, ...) {
-  n      <- object$parsed$n
-  # MLE of sigma^2 uses n not n-p in the denominator
-  sigma2 <- object$rss / n
-  ll     <- -n / 2 * (log(2 * pi * sigma2) + 1)
-
-  K    <- object$K
-  p_w  <- length(object$theta_hat)
-  p_cov <- length(object$cov_coef)
-  # free params: (K-1) scores + p_w weight params + p_cov linear params + 1 for sigma^2
-  df   <- (K - 1L) + p_w + p_cov + 1L
-
+  n <- object$data$n
+  # ML estimate of sigma^2 uses n, not the residual df
+  ll <- -n / 2 * (log(2 * pi * object$rss / n) + 1)
+  # Free parameters: mean-model parameters plus sigma^2
+  df <- n - object$df.residual + 1L
   structure(ll, df = df, nobs = n, class = "logLik")
 }
 
 #' @export
-augment.diagref_fit <- function(x, ...) {
-  mf <- x$parsed$mf
-  tibble::as_tibble(mf) |>
-    tibble::add_column(
-      .fitted   = x$inner$fitted,
-      .resid    = x$inner$residuals,
-      .w        = if (length(x$w_hat) == 1) x$w_hat else x$w_hat,
-      .drm_term = x$w_hat * x$scores[as.integer(x$parsed$var1)] +
-                  (1 - x$w_hat) * x$scores[as.integer(x$parsed$var2)]
-    )
+print.diagref_fit <- function(x, digits = 4, ...) {
+  fmt <- function(v) formatC(v, digits = digits, format = "f")
+
+  cat("Diagonal reference model\n\n")
+  cat("Formula:", paste(deparse(x$formula), collapse = " "), "\n")
+
+  if (x$scalar_weight) {
+    ci <- confint(x, "w")
+    cat(sprintf("Weight:  w = %s  (95%% profile CI %s to %s)\n",
+                fmt(plogis(x$theta)), fmt(ci[1]), fmt(ci[2])))
+  } else {
+    th    <- x$theta
+    parts <- ifelse(names(th) == "(Intercept)", fmt(abs(th)),
+                    paste(fmt(abs(th)), "*", names(th)))
+    signs <- ifelse(th < 0, "- ", "+ ")
+    eq    <- paste0(signs, parts, collapse = " ")
+    eq    <- sub("^\\+ ", "", eq)
+    cat("Weight:  logit(w) =", eq, "\n")
+  }
+
+  cat("\nScores (", x$data$dyad[1], " / ", x$data$dyad[2], "):\n", sep = "")
+  print(round(x$scores, digits))
+
+  cat("\nCovariates:\n")
+  print(round(x$cov_coef, digits))
+
+  cat(sprintf("\nn = %d, residual df = %d, sigma = %s\n",
+              x$data$n, x$df.residual, fmt(x$sigma)))
+  invisible(x)
 }

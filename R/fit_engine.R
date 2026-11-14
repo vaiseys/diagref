@@ -1,157 +1,178 @@
-# Build the DRM design matrix columns for a given weight vector w_i.
-# Uses sum-to-zero (contr.sum) coding: K-1 columns returned.
-# var1, var2: integer indices (1-based) into all_levels
-# w: numeric vector length n
-# K: number of levels
-# Returns n x (K-1) matrix
-build_drm_matrix <- function(var1_int, var2_int, w, K) {
-  C <- contr.sum(K)  # K x (K-1) sum-to-zero contrast matrix
-  # DRM row for obs i: w_i * C[var1_i, ] + (1-w_i) * C[var2_i, ]
-  w * C[var1_int, , drop = FALSE] + (1 - w) * C[var2_int, , drop = FALSE]
+# Fitting engine.
+#
+# For fixed weights w the DRM is linear in the scores and the covariate
+# coefficients, so those are profiled out by OLS and only the weight-model
+# coefficients theta are optimised numerically (variable projection). The
+# objective is log(RSS), which is -2/n times the Gaussian log-likelihood with
+# sigma^2 profiled out, plus a constant. Its gradient is analytic: by the
+# envelope theorem,
+#   dRSS / dtheta = -2 G' r,   G = d mu / d theta = w (1 - w) (s[a] - s[b]) Z,
+# where s are the scores and r the residuals at the inner OLS solution.
+
+# OLS fit of the linear part for fixed theta.
+drm_linear_fit <- function(theta, Z, d) {
+  w  <- plogis(drop(Z %*% theta))
+  X  <- cbind(d$C2 + w * d$D, d$X_cov)
+  qx <- qr(X)
+  if (qx$rank < ncol(X)) {
+    stop("The design matrix is rank-deficient; check for covariates that are ",
+         "collinear with the dyadic variables.", call. = FALSE)
+  }
+  resid <- qr.resid(qx, d$y)
+  list(w = w, X = X, coef = qr.coef(qx, d$y), resid = resid,
+       rss = sum(resid^2))
 }
 
-# Given theta (unconstrained), compute weight vector w (length n).
-# Z_w: n x p weight model matrix; theta: p-vector
-compute_weights <- function(theta, Z_w) {
-  plogis(drop(Z_w %*% theta))
+# n x p Jacobian of the mean with respect to theta.
+dmu_dtheta <- function(lin, Z, d) {
+  delta <- lin$coef[seq_len(d$K - 1L)]
+  (lin$w * (1 - lin$w) * drop(d$D %*% delta)) * Z
 }
 
-# Inner OLS fit for fixed weights w.
-# Returns list: coef, rss, sigma2, fitted, residuals, df_resid
-drm_inner_fit <- function(w, parsed) {
-  K       <- length(parsed$all_levels)
-  v1_int  <- as.integer(parsed$var1)
-  v2_int  <- as.integer(parsed$var2)
-
-  X_drm <- build_drm_matrix(v1_int, v2_int, w, K)
-  X     <- cbind(X_drm, parsed$X_cov)
-
-  fit <- lm.fit(X, parsed$y)
-
-  n       <- parsed$n
-  p       <- ncol(X)
-  df_res  <- n - p
-  rss     <- sum(fit$residuals^2)
-  sigma2  <- rss / df_res
-
+# Objective and gradient in theta for weight design Z. optim() calls fn and
+# gr at the same point, so the last inner fit is cached.
+drm_objective <- function(Z, d) {
+  last_theta <- NULL
+  last_fit   <- NULL
+  at <- function(theta) {
+    if (!identical(theta, last_theta)) {
+      last_fit   <<- drm_linear_fit(theta, Z, d)
+      last_theta <<- theta
+    }
+    last_fit
+  }
   list(
-    coef      = fit$coefficients,
-    rss       = rss,
-    sigma2    = sigma2,
-    fitted    = fit$fitted.values,
-    residuals = fit$residuals,
-    df_resid  = df_res,
-    rank      = fit$rank,
-    X         = X
+    fn = function(theta) log(at(theta)$rss),
+    gr = function(theta) {
+      lin <- at(theta)
+      -2 * drop(crossprod(dmu_dtheta(lin, Z, d), lin$resid)) / lin$rss
+    }
   )
 }
 
-# Objective: RSS as a function of unconstrained theta (for optimizer).
-drm_objective <- function(theta, Z_w, parsed) {
-  w <- compute_weights(theta, Z_w)
-  drm_inner_fit(w, parsed)$rss
-}
+drm_fit <- function(d) {
+  Z      <- d$Z
+  p      <- ncol(Z)
+  scalar <- is_scalar_weight(Z)
 
-# Recover all K sum-to-zero scores from the K-1 contrast coefficients.
-# delta: (K-1)-vector of contrast coefficients
-# Returns K-vector of scores (sums to zero)
-recover_scores <- function(delta, K) {
-  C <- contr.sum(K)
-  drop(C %*% delta)
-}
+  # Single weight: coarse grid, then Brent on the best bracket. The grid
+  # guards against local optima and is cheap (one OLS fit per point).
+  one  <- drm_objective(intercept_matrix(d$n), d)
+  grid <- seq(-10, 10, by = 0.5)
+  i    <- which.min(vapply(grid, one$fn, numeric(1)))
+  bracket  <- grid[c(max(i - 1L, 1L), min(i + 1L, length(grid)))]
+  theta_1  <- optimize(one$fn, bracket, tol = 1e-10)$minimum
 
-# Center non-intercept columns of Z_w for numerical stability.
-# Returns list: Z_centered, col_means (for back-transforming theta later if needed)
-center_weight_matrix <- function(Z_w) {
-  col_means <- colMeans(Z_w)
-  # Leave intercept column (all 1s) untouched
-  is_intercept <- apply(Z_w, 2, function(col) all(col == 1))
-  col_means[is_intercept] <- 0
-  Z_centered <- sweep(Z_w, 2, col_means, "-")
-  list(Z = Z_centered, means = col_means)
-}
-
-# Main fitting routine. Returns a raw fit object.
-drm_fit <- function(parsed, Z_w) {
-  p_w <- ncol(Z_w)
-
-  # Center non-intercept columns for numerical stability. This transforms
-  # the intercept to represent logit(w) at the mean of each predictor,
-  # which avoids degeneracy when predictors are far from zero (e.g. raw age).
-  centered   <- center_weight_matrix(Z_w)
-  Z_c        <- centered$Z
-  col_means  <- centered$means
-
-  neg_ll <- function(theta) -drm_loglik(theta, Z_c, parsed)
-
-  if (p_w == 1) {
-    # Scalar w: 1D Brent with Hessian for SE
-    opt <- optim(
-      par     = 0,
-      fn      = neg_ll,
-      method  = "Brent",
-      lower   = -10,
-      upper   = 10,
-      hessian = TRUE
-    )
+  A <- weight_reparam(Z)
+  if (scalar) {
+    theta <- theta_1
   } else {
-    # Initialize intercept from scalar fit; other params start at 0
-    scalar_opt <- optim(
-      par    = 0,
-      fn     = function(th) -drm_loglik(th, Z_c[, 1, drop = FALSE], parsed),
-      method = "Brent",
-      lower  = -10,
-      upper  = 10
-    )
-    theta0 <- c(scalar_opt$par, rep(0, p_w - 1))
-    opt <- optim(
-      par     = theta0,
-      fn      = neg_ll,
-      method  = "BFGS",
-      hessian = TRUE
-    )
+    # Optimise in the standardised parameterisation, starting from the
+    # single-weight solution (projected onto the weight design).
+    Zs    <- Z %*% A
+    obj   <- drm_objective(Zs, d)
+    start <- qr.coef(qr(Zs), rep(theta_1, d$n))
+    opt   <- optim(start, obj$fn, obj$gr, method = "BFGS",
+                   control = list(maxit = 1000, reltol = 1e-12))
+    if (opt$convergence != 0L) {
+      warning("The optimiser did not converge (code ", opt$convergence, ").",
+              call. = FALSE)
+    }
+    theta <- drop(A %*% opt$par)
+  }
+  names(theta) <- colnames(Z)
+
+  # |logit(w)| > 8 means w is within 0.0003 of 0 or 1. The likelihood is then
+  # flat in that direction, so the estimate is wherever the optimiser
+  # stopped, its Wald SE is meaningless, and its profile CI is open-ended.
+  if (any(abs(Z %*% theta) > 8)) {
+    warning("Some fitted weights are at the boundary (w = 0 or 1). The ",
+            "weight estimates are unstable there; use the profile ",
+            "confidence intervals, which may be infinite.", call. = FALSE)
   }
 
-  theta_c    <- opt$par
-  vcov_c     <- tryCatch(solve(opt$hessian),
-                         error = function(e) matrix(NA_real_, p_w, p_w))
+  lin <- drm_linear_fit(theta, Z, d)
+  inf <- drm_vcov(lin, Z, d)
 
-  # Back-transform from centered to original scale so Z_w (uncentered)
-  # can be used for all downstream predictions.
-  # Slopes are unchanged; only intercept absorbs the centering shift.
-  if (p_w > 1) {
-    theta_hat <- theta_c
-    theta_hat[1] <- theta_c[1] - sum(theta_c[-1] * col_means[-1])
+  # Internal parameters are (delta, gamma, theta). Reported parameters are
+  # (scores, weight, gamma), where weight is w = plogis(theta) for a single
+  # weight and the logit-scale theta otherwise. Tr is the Jacobian of that
+  # map, for the delta method.
+  K1    <- d$K - 1L
+  q     <- ncol(d$X_cov)
+  delta <- lin$coef[seq_len(K1)]
+  gamma <- lin$coef[K1 + seq_len(q)]
+  names(gamma) <- colnames(d$X_cov)
+  scores <- drop(d$C %*% delta)
+  names(scores) <- d$levels
 
-    J           <- diag(p_w)
-    J[1, -1]    <- -col_means[-1]
-    vcov_theta  <- J %*% vcov_c %*% t(J)
-  } else {
-    theta_hat  <- theta_c
-    vcov_theta <- vcov_c
-  }
+  w_est <- if (scalar) plogis(theta) else theta
+  Tr <- matrix(0, d$K + p + q, K1 + q + p)
+  Tr[seq_len(d$K), seq_len(K1)] <- d$C
+  Tr[d$K + seq_len(p), K1 + q + seq_len(p)] <-
+    if (scalar) w_est * (1 - w_est) else diag(p)
+  Tr[d$K + p + seq_len(q), K1 + seq_len(q)] <- diag(q)
 
-  w_hat <- compute_weights(theta_hat, Z_w)
-  inner <- drm_inner_fit(w_hat, parsed)
+  V0 <- inf$vcov
+  V0[is.na(V0)] <- 0
+  V  <- Tr %*% V0 %*% t(Tr)
+  w_rows <- d$K + seq_len(p)
+  if (anyNA(inf$vcov)) V[w_rows, ] <- V[, w_rows] <- NA_real_
 
-  K     <- length(parsed$all_levels)
-  n_drm <- K - 1
-  delta  <- inner$coef[seq_len(n_drm)]
-  scores <- recover_scores(delta, K)
-  names(scores) <- parsed$all_levels
+  est <- c(scores, w_est, gamma)
+  names(est) <- c(paste0("score[", d$levels, "]"),
+                  if (scalar) "w" else paste0("w[", colnames(Z), "]"),
+                  colnames(d$X_cov))
+  dimnames(V) <- list(names(est), names(est))
 
-  cov_coef <- inner$coef[-(seq_len(n_drm))]
-
+  theta_rows <- K1 + q + seq_len(p)
   list(
-    theta_hat  = theta_hat,
-    vcov_theta = vcov_theta,
-    w_hat      = w_hat,
-    scores     = scores,
-    cov_coef   = cov_coef,
-    inner      = inner,
-    rss        = inner$rss,
-    K          = K,
-    parsed     = parsed,
-    Z_w        = Z_w
+    coefficients  = est,
+    vcov          = V,
+    term_type     = rep(c("score", "weight", "covariate"), c(d$K, p, q)),
+    scores        = scores,
+    theta         = theta,
+    vcov_theta    = inf$vcov[theta_rows, theta_rows, drop = FALSE],
+    cov_coef      = gamma,
+    w             = lin$w,
+    fitted        = d$y - lin$resid,
+    residuals     = lin$resid,
+    rss           = lin$rss,
+    sigma         = sqrt(inf$sigma2),
+    df.residual   = inf$df.residual,
+    A             = A,
+    scalar_weight = scalar
   )
+}
+
+# Joint asymptotic covariance of (delta, gamma, theta): sigma^2 (J'J)^-1,
+# with J = [X, G] the Jacobian of the mean (as for any nonlinear least
+# squares fit; cf. nls()). If theta is not identified (J rank-deficient),
+# fall back to the covariance of the linear part conditional on w.
+drm_vcov <- function(lin, Z, d) {
+  J      <- cbind(lin$X, dmu_dtheta(lin, Z, d))
+  df     <- d$n - ncol(J)
+  sigma2 <- lin$rss / df
+
+  V    <- matrix(NA_real_, ncol(J), ncol(J))
+  Jinv <- crossprod_inverse(J)
+  if (!is.null(Jinv)) {
+    V <- sigma2 * Jinv
+  } else {
+    warning("The weight is not identified (the dyadic variables never ",
+            "differ, or w is at 0 or 1); its standard error is unavailable.",
+            call. = FALSE)
+    k <- ncol(lin$X)
+    V[seq_len(k), seq_len(k)] <- sigma2 * crossprod_inverse(lin$X)
+  }
+  list(vcov = V, sigma2 = sigma2, df.residual = df)
+}
+
+# (M'M)^-1 via QR, or NULL if M is rank-deficient.
+crossprod_inverse <- function(M) {
+  qm <- qr(M)
+  if (qm$rank < ncol(M)) return(NULL)
+  out <- matrix(0, ncol(M), ncol(M))
+  out[qm$pivot, qm$pivot] <- chol2inv(qr.R(qm))
+  out
 }
