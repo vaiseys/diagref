@@ -40,12 +40,15 @@ remotes::install_github("vaiseys/diagref")
 
 `gss2024`, an extract of the 2024 General Social Survey, comes with the
 package. Do gender-role attitudes follow people's own education or their
-parents'? (`fefam` runs from 1 = traditional to 4 = egalitarian.)
+parents'? (`fefam` runs from 1 = traditional to 4 = egalitarian.) We keep
+respondents aged 25 and over, since many younger ones have not finished
+their education.
 
 ```{r}
 library(diagref)
 
-fit <- diagref(fefam ~ degree + pardeg + female + age, data = gss2024)
+gss25 <- subset(gss2024, age >= 25)
+fit <- diagref(fefam ~ degree + pardeg + female + age, data = gss25)
 fit
 ```
 
@@ -59,7 +62,7 @@ tidy(fit)
 Does the weight differ for women and men? `weight_formula` models it:
 
 ```{r}
-fit2 <- diagref(fefam ~ degree + pardeg + female + age, data = gss2024,
+fit2 <- diagref(fefam ~ degree + pardeg + female + age, data = gss25,
                 weight_formula = ~ female)
 subset(tidy(fit2), type == "weight")
 
@@ -72,7 +75,9 @@ AIC(fit, fit2)
 
 Women's attitudes track their own education more closely. The interval for
 `w[female]` is open-ended because the likelihood stays flat as women's
-weight approaches 1.
+weight approaches 1. For the same reason its Wald standard error is huge
+and would suggest no difference at all, which is why weight coefficients
+are tested with likelihood-ratio tests instead.
 
 ## Usage
 

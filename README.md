@@ -31,27 +31,30 @@ remotes::install_github("vaiseys/diagref")
 
 `gss2024`, an extract of the 2024 General Social Survey, comes with the
 package. Do gender-role attitudes follow people’s own education or their
-parents’? (`fefam` runs from 1 = traditional to 4 = egalitarian.)
+parents’? (`fefam` runs from 1 = traditional to 4 = egalitarian.) We
+keep respondents aged 25 and over, since many younger ones have not
+finished their education.
 
 ``` r
 library(diagref)
 
-fit <- diagref(fefam ~ degree + pardeg + female + age, data = gss2024)
+gss25 <- subset(gss2024, age >= 25)
+fit <- diagref(fefam ~ degree + pardeg + female + age, data = gss25)
 fit
 #> Diagonal reference model
 #> 
 #> Formula: fefam ~ degree + pardeg + female + age 
-#> Weight:  w = 0.8169  (95% profile CI 0.6902 to 0.9539)
+#> Weight:  w = 0.8803  (95% profile CI 0.7416 to 1.0000)
 #> 
 #> Scores (degree / pardeg):
 #>       0       1       2       3       4 
-#> -0.4762 -0.1524 -0.1140  0.2894  0.4532 
+#> -0.4629 -0.1464 -0.0979  0.2763  0.4310 
 #> 
 #> Covariates:
 #> (Intercept)      female         age 
-#>      2.8653      0.1841     -0.0012 
+#>      2.8424      0.1759     -0.0009 
 #> 
-#> n = 2047, residual df = 2039, sigma = 0.8551
+#> n = 1899, residual df = 1891, sigma = 0.8546
 ```
 
 Own education carries most of the weight. `tidy()` gives every
@@ -60,46 +63,48 @@ parameter, with standard errors and confidence intervals:
 ``` r
 tidy(fit)
 #> # A tibble: 9 × 8
-#>   term        type      estimate std.error statistic    p.value conf.low conf.high
-#>   <chr>       <chr>        <dbl>     <dbl>     <dbl>      <dbl>    <dbl>     <dbl>
-#> 1 score[0]    score     -0.476     0.0594      -8.01  1.91e- 15 -0.593   -0.360   
-#> 2 score[1]    score     -0.152     0.0368      -4.14  3.59e-  5 -0.225   -0.0802  
-#> 3 score[2]    score     -0.114     0.0650      -1.76  7.94e-  2 -0.241    0.0134  
-#> 4 score[3]    score      0.289     0.0447       6.48  1.17e- 10  0.202    0.377   
-#> 5 score[4]    score      0.453     0.0536       8.45  5.39e- 17  0.348    0.558   
-#> 6 w           weight     0.817     0.0660      NA    NA          0.690    0.954   
-#> 7 (Intercept) covariate  2.87      0.0633      45.3   3.63e-310  2.74     2.99    
-#> 8 female      covariate  0.184     0.0383       4.81  1.64e-  6  0.109    0.259   
-#> 9 age         covariate -0.00124   0.00109     -1.13  2.57e-  1 -0.00338  0.000903
+#>   term        type       estimate std.error statistic    p.value conf.low conf.high
+#>   <chr>       <chr>         <dbl>     <dbl>     <dbl>      <dbl>    <dbl>     <dbl>
+#> 1 score[0]    score     -0.463      0.0622     -7.44   1.47e- 13 -0.585    -0.341  
+#> 2 score[1]    score     -0.146      0.0367     -3.99   6.78e-  5 -0.218    -0.0745 
+#> 3 score[2]    score     -0.0979     0.0635     -1.54   1.23e-  1 -0.222     0.0266 
+#> 4 score[3]    score      0.276      0.0439      6.30   3.72e- 10  0.190     0.362  
+#> 5 score[4]    score      0.431      0.0531      8.12   8.39e- 16  0.327     0.535  
+#> 6 w           weight     0.880      0.0735     NA     NA          0.742     1      
+#> 7 (Intercept) covariate  2.84       0.0717     39.7    6.36e-251  2.70      2.98   
+#> 8 female      covariate  0.176      0.0397      4.43   1.00e-  5  0.0980    0.254  
+#> 9 age         covariate -0.000893   0.00122    -0.731  4.65e-  1 -0.00329   0.00150
 ```
 
 Does the weight differ for women and men? `weight_formula` models it:
 
 ``` r
-fit2 <- diagref(fefam ~ degree + pardeg + female + age, data = gss2024,
+fit2 <- diagref(fefam ~ degree + pardeg + female + age, data = gss25,
                 weight_formula = ~ female)
 subset(tidy(fit2), type == "weight")
 #> # A tibble: 2 × 8
 #>   term           type   estimate std.error statistic p.value conf.low conf.high
 #>   <chr>          <chr>     <dbl>     <dbl>     <dbl>   <dbl>    <dbl>     <dbl>
-#> 1 w[(Intercept)] weight    0.657     0.417      1.65  0.0999   -0.122      1.75
-#> 2 w[female]      weight    2.00      1.49       2.20  0.0280    0.193    Inf
+#> 1 w[(Intercept)] weight    0.936     0.509      2.05  0.0400   0.0399      2.63
+#> 2 w[female]      weight    4.43     21.5        2.20  0.0278   0.0715    Inf
 
 # Weights for men and women
 th <- coef(fit2)[c("w[(Intercept)]", "w[female]")]
 plogis(c(men = th[[1]], women = sum(th)))
 #>       men     women 
-#> 0.6586191 0.9341890
+#> 0.7183657 0.9953673
 
 AIC(fit, fit2)
 #>      df      AIC
-#> fit   9 5178.132
-#> fit2 10 5175.306
+#> fit   9 4802.345
+#> fit2 10 4800.283
 ```
 
 Women’s attitudes track their own education more closely. The interval
 for `w[female]` is open-ended because the likelihood stays flat as
-women’s weight approaches 1.
+women’s weight approaches 1. For the same reason its Wald standard error
+is huge and would suggest no difference at all, which is why weight
+coefficients are tested with likelihood-ratio tests instead.
 
 ## Usage
 
