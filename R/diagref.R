@@ -31,9 +31,10 @@
 #' are dropped.
 #'
 #' @param formula A formula `y ~ a + b + covariates`. The first two terms are
-#'   the dyadic variables; they are treated as categorical and must share
-#'   categories (numeric codes are fine). Further terms are covariates and
-#'   enter linearly, as in [lm()].
+#'   the dyadic variables, and `w` is the weight of the first. They are
+#'   treated as categorical and must share categories (numeric codes are
+#'   fine); a warning is given if they have different numbers of categories.
+#'   Further terms are covariates and enter linearly, as in [lm()].
 #' @param data A data frame.
 #' @param weight_formula An optional one-sided formula for the weight, such
 #'   as `~ female` or `~ female + age`. The default, `NULL`, estimates a

@@ -42,6 +42,17 @@ diagref_data <- function(formula, data, weight_formula = NULL) {
          "(the dyadic pair).", call. = FALSE)
   }
 
+  # The pair is taken by position, so a covariate written first silently
+  # becomes part of it. Different numbers of categories usually mean that.
+  n_a <- length(unique(a))
+  n_b <- length(unique(b))
+  if (n_a != n_b) {
+    warning("`", labs[1], "` has ", n_a, " categories but `", labs[2],
+            "` has ", n_b, ". The first two terms of `formula` are used as ",
+            "the dyadic pair; check that they are the variables you intended.",
+            call. = FALSE)
+  }
+
   lev <- shared_levels(a, b)
   K   <- length(lev)
   if (K < 2L) {

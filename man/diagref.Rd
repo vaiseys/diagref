@@ -8,9 +8,10 @@ diagref(formula, data, weight_formula = NULL)
 }
 \arguments{
 \item{formula}{A formula \code{y ~ a + b + covariates}. The first two terms are
-the dyadic variables; they are treated as categorical and must share
-categories (numeric codes are fine). Further terms are covariates and
-enter linearly, as in \code{\link[=lm]{lm()}}.}
+the dyadic variables, and \code{w} is the weight of the first. They are
+treated as categorical and must share categories (numeric codes are
+fine); a warning is given if they have different numbers of categories.
+Further terms are covariates and enter linearly, as in \code{\link[=lm]{lm()}}.}
 
 \item{data}{A data frame.}
 

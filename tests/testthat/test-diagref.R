@@ -322,6 +322,15 @@ test_that("transformed and interacted covariates work", {
                     names(coef(fit))))
 })
 
+test_that("a pair with different numbers of categories gives a warning", {
+  df <- sim_drm()
+  # Covariate written first: g (2 categories) and orig (4) become the pair
+  # (The resulting nonsense model also triggers fit warnings; ignore those.)
+  w <- capture_warnings(diagref(y ~ g + orig + dest, data = df))
+  expect_match(w, "`g` has 2 categories but `orig` has 4", all = FALSE)
+  expect_no_warning(diagref(y ~ orig + dest + g, data = df))
+})
+
 test_that("bad input gives clear errors", {
   df <- sim_drm()
   expect_error(diagref(y ~ orig, data = df), "two right-hand-side terms")
